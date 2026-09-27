@@ -2,3 +2,8 @@ node_modules
 config/config/cfg.yaml
 config/config/botlist.json
 pnpm-lock.yaml
+# 编辑器临时文件：可能夹带配置明文（AppSecret），别提交
+*.swp
+*.swo
+*~
+.\#*
