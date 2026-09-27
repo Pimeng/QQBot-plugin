@@ -51,5 +51,21 @@ escapeMarkdown: true
 webhookPort: 0
 # 公网地址，用于把图片等文件转成可被 QQ 拉取的直链，如 https://bot.example.com
 url: ""
-# 账号 token：QQ号:AppID:Token:Secret:类型(1/2):模式(0/1)
+# 账号列表：只填开放平台的 AppID / AppSecret 这两个值
+#   uin      机器人QQ号，账号标识；省略时用 appid 顶替
+#   appid    开放平台 AppID（必填）
+#   secret   开放平台 AppSecret（必填）；在 q.qq.com 重置后要同步改这里
+#   group    是否群Bot，默认 true（群聊 / C2C 私聊 intents）
+#   guild    是否频道私域，默认 false（频道 GUILD intents）
+#   webhook  true 走 WebHook（需同时配 webhookPort + 公网 url），默认 false 走 WebSocket
+#
+#   accounts:
+#     - uin: 3889013403
+#       appid: 102091829
+#       secret: 在 q.qq.com「开发设置」里拿到的 AppSecret
+accounts: []
+# 旧写法（只有 #QQBot设置 指令写过的历史数据会落在这一项，含义与 accounts 相同）：
+#   机器人QQ号:AppID:Token:AppSecret:是否群Bot:是否频道私域
+# 第 3 段 Token 是 v1 时代凭证，现在取 access_token 只认 appid + secret，填什么都行；
+# 两种写法同时存在时，同一个机器人以 accounts 为准
 token: []

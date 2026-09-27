@@ -181,13 +181,15 @@ export function flattenReceivedMessage(msg) {
 /**
  * 创建 SDK 实例
  *
- * opts 沿用我们原有配置：`{ appid, token, secret, intents, sandbox, timeout, maxRetry, retryDelay, connectTimeout }`
+ * opts 沿用我们原有配置：`{ appid, secret, intents, sandbox, timeout, maxRetry, retryDelay, connectTimeout }`
+ *
+ * 注意：v1 时代的 Bot Token 已作废，取凭证只认 appid + secret
+ * （POST /app/getAppAccessToken 换 access_token），所以这里不再透传 token。
  */
 export function createBot(opts = {}) {
   const config = {
     appid: opts.appid,
     secret: opts.secret,
-    token: opts.token,
     intents: mapIntents(opts.intents),
     /** 1.3.0 必须显式指定，否则 ReceiverFactory 直接抛 Unknown receiver mode */
     mode: ReceiverMode.WEBSOCKET,

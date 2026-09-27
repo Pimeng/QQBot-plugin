@@ -7,6 +7,7 @@ import { randomInt } from "node:crypto"
 import QRCode from "qrcode"
 import { ulid } from "ulid"
 import { config, CFG_FILE } from "../lib/utils/cfg.js"
+import { getAccounts, normalizeAccount } from "../lib/utils/accounts.js"
 import {
   createBot,
   login as sdkLogin,
@@ -2037,14 +2038,16 @@ export default class QQBotAdapter {
    * 群聊默认带上 INTERACTION（按钮交互），这样消息按钮里的「回调按钮」才能收到
    * INTERACTION_CREATE；若该机器人没开通按钮能力，connect() 会自动摘掉它重连。
    * 需要频道/消息审核时，请在 plugins/QQBot-Plugin/config/config/cfg.yaml 的 intents 里显式填写。
+   *
+   * @param account 规范化后的账号（见 lib/utils/accounts.js）
    */
-  makeIntents(token) {
+  makeIntents(account) {
     if (Array.isArray(config.intents) && config.intents.length) return [...config.intents]
 
     /** 群Bot：群聊消息事件 + 按钮交互 */
-    if (+token[4]) return [...GROUP_INTENTS]
+    if (account.group) return [...GROUP_INTENTS]
     /** 只声明了频道（不是群Bot）：那就只给频道事件 */
-    if (+token[5]) return [...GUILD_MESSAGE_INTENTS]
+    if (account.guild) return [...GUILD_MESSAGE_INTENTS]
     return []
   }
 
@@ -2055,8 +2058,8 @@ export default class QQBotAdapter {
    * 因此这里按“能力从多到少”排好队，把需要单独申请的 OPTIONAL_INTENTS 作为可摘除项，
    * 保证多要一个 INTERACTION 不会让机器人直接掉线。
    */
-  buildIntentQueue(token, explicit) {
-    const wanted = this.makeIntents(token)
+  buildIntentQueue(account, explicit) {
+    const wanted = this.makeIntents(account)
     const candidates = []
     const push = list => {
       const unique = [...new Set(list.filter(Boolean))]
@@ -2069,30 +2072,35 @@ export default class QQBotAdapter {
     /** 摘掉需单独申请的 intent 再试一次 */
     push(wanted.filter(i => !OPTIONAL_INTENTS.includes(i)))
 
-    if (!explicit && +token[5] && !wanted.some(i => GUILD_MESSAGE_INTENTS.includes(i))) {
+    if (!explicit && account.guild && !wanted.some(i => GUILD_MESSAGE_INTENTS.includes(i))) {
       push([...GUILD_MESSAGE_INTENTS])
       push(GUILD_MESSAGE_INTENTS.filter(i => !OPTIONAL_INTENTS.includes(i)))
     }
 
     /** 兜底：任何情况下都留一条最保守的群聊组合 */
-    if (!explicit && +token[4]) push(["GROUP_AT_MESSAGE_CREATE", "C2C_MESSAGE_CREATE"])
+    if (!explicit && account.group) push(["GROUP_AT_MESSAGE_CREATE", "C2C_MESSAGE_CREATE"])
 
     return candidates
   }
 
-  async connect(token) {
-    token = token.split(":")
-    const id = token[0]
+  /**
+   * 连接一个账号
+   *
+   * @param entry 规范化账号对象，或旧的「机器人QQ号:AppID:Token:AppSecret:…」冒号串
+   */
+  async connect(entry) {
+    const account = normalizeAccount(entry)
+    const id = account.uin
     delete this.activeIntents[id]
 
     const explicit = Array.isArray(config.intents) && config.intents.length > 0
-    const wanted = this.makeIntents(token)
-    const queue = this.buildIntentQueue(token, explicit)
+    const wanted = this.makeIntents(account)
+    const queue = this.buildIntentQueue(account, explicit)
 
     let lastError = null
     for (let i = 0; i < queue.length; i++) {
       const { list } = queue[i]
-      const ret = await this.connectOnce(id, token, list)
+      const ret = await this.connectOnce(id, account, list)
       if (ret.ok) {
         this.activeIntents[id] = [...list]
         if (Bot[id]?.info) Bot[id].info.intents = [...list]
@@ -2136,12 +2144,11 @@ export default class QQBotAdapter {
   }
 
   /** 单次连接尝试，intents 由 connect() 决定 */
-  async connectOnce(id, token, intents) {
+  async connectOnce(id, account, intents) {
     const opts = {
       ...config.bot,
-      appid: token[1],
-      token: token[2],
-      secret: token[3],
+      appid: account.appid,
+      secret: account.secret,
       intents,
     }
     log("info", [`申请 intents：${intents.join(" | ") || "（空）"}`], id)
@@ -2232,7 +2239,7 @@ export default class QQBotAdapter {
     })
 
     try {
-      if (token[4] === "2") {
+      if (account.webhook) {
         await Bot[id].sdk.sessionManager.getAccessToken()
         Bot[id].login = () => (this.appid[opts.appid] = Bot[id])
         Bot[id].logout = () => delete this.appid[opts.appid]
@@ -2253,7 +2260,7 @@ export default class QQBotAdapter {
       } catch (e) {}
       delete Bot[id]
       markAdapterId(id, false)
-      if (token[4] === "2") delete this.appid[opts.appid]
+      if (account.webhook) delete this.appid[opts.appid]
       return { ok: false, intentError, error: msg }
     }
 
@@ -2305,21 +2312,21 @@ export default class QQBotAdapter {
     if (
       Number(config.webhookPort) > 0 ||
       config.url ||
-      (config.token || []).some(token => /:2$/.test(token))
+      getAccounts(config).some(account => account.webhook)
     )
       webhook.start()
   }
 
   async load() {
     webhook.use(`/${this.name}`, this.makeWebHook.bind(this))
-    for (const token of config.token) await sleep(5000, this.connect(token))
+    for (const account of getAccounts(config)) await sleep(5000, this.connect(account))
   }
 }
 
 /**
  * 全局单例
  *
- * 适配器只需要一个实例（一个实例内部按 config.token 连接多个账号），
+ * 适配器只需要一个实例（一个实例内部按 config.accounts / config.token 连接多个账号），
  * 指令插件与 WebHook 路由都通过它访问适配器，所以在这里创建并注入给 common.js。
  */
 export const qqbot = new QQBotAdapter(config)

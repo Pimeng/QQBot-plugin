@@ -78,18 +78,33 @@ cd plugins/QQBot-Plugin && pnpm i
 ```
 
 2. 打开 [QQ 开放平台](https://q.qq.com) 创建机器人：
-   开发设置 → 得到 `机器人QQ号:AppID:Token:AppSecret`（见 [官方文档](https://bot.q.qq.com/wiki/develop/api-v2/)）
-3. 用主人账号（`config/config/other.yaml: masterQQ`）或标准输入控制台发送：
+   「开发设置」里只需要记下 **AppID** 和 **AppSecret** 两个值（见 [官方文档](https://bot.q.qq.com/wiki/develop/api-v2/)）。
+
+   > v1 时代的 `Token` 已作废：SDK 取凭证只认 `AppID + AppSecret`
+   > （`POST /app/getAppAccessToken` → `access_token`，有效期 7200 秒，插件自动刷新），
+   > 调用时带上 `Authorization: QQBot <access_token>`。本插件已不再使用 Token。
+
+3. 把账号写进 `plugins/QQBot-Plugin/config/config/cfg.yaml` 的 `accounts`（推荐，key: value 一目了然）：
+
+```yaml
+accounts:
+  - uin: 3889013403     # 机器人QQ号（账号标识；可省略，省略时用 appid 顶替）
+    appid: 102091829    # 开放平台 AppID
+    secret: xxxxxxxxxx  # 开放平台 AppSecret（在 q.qq.com 重置后必须同步改这里）
+    group: true         # 群聊 + C2C 私聊（默认 true）
+    guild: false        # 频道（默认 false）
+    webhook: false      # true 走 WebHook（需同时配 webhookPort + 公网 url）
+```
+
+   也可以用主人账号（`config/config/other.yaml: masterQQ`）或标准输入控制台发指令，写入的是同一处 `accounts`：
 
 ```
-#QQBot设置114:514:1919:810:1:1
+#QQBot设置3889013403:102091829:AppSecret
 ```
 
-格式：`机器人QQ号:AppID:Token:AppSecret:[是否群Bot:是否频道私域]`，最后一段为 `2` 时使用 WebHook：
-
-```
-#QQBot设置114:514:1919:810:2
-```
+   指令里 3 段是上面的简写（默认群Bot）；**4 段及以上**仍按旧格式解析：
+   `机器人QQ号:AppID:Token:AppSecret[:是否群Bot[:是否频道私域]]`，其中 Token 段会被忽略，末段为 `2` 表示 WebHook。
+   需要关掉群聊 / 开频道 / 走 WebHook 时，用 `accounts` 的对象写法显式声明更清楚。重复发送同一个机器人即删除该账号。
 
 > WebHook 需要公网 HTTPS，并在 QQ 开放平台填写 `url/QQBot`，同时把 `config/config/cfg.yaml: webhookPort` 设为监听端口（默认 0 表示不启用）。
 
@@ -107,10 +122,10 @@ cd plugins/QQBot-Plugin && pnpm i
 
 默认 **只申请群聊事件 + 按钮交互，频道相关一律不默认申请**（频道 intent 需要机器人具备频道能力，未开通时会让整个握手 4014）：
 
-| 账号声明（`#QQBot设置` 末两段） | 默认申请的 intents |
+| 账号声明（`accounts` 字段 / 旧写法末两段） | 默认申请的 intents |
 | --- | --- |
-| 群Bot（第 5 位 `1`） | `GROUP_AT_MESSAGE_CREATE`、`C2C_MESSAGE_CREATE`、`INTERACTION` |
-| 只声明频道（第 5 位 `0`、第 6 位 `1`） | `GUILDS`、`GUILD_MESSAGE_REACTIONS`、`DIRECT_MESSAGE`、`GUILD_MESSAGES` |
+| `group: true`（默认；旧写法第 5 位 `1`） | `GROUP_AT_MESSAGE_CREATE`、`C2C_MESSAGE_CREATE`、`INTERACTION` |
+| 只声明频道（`group: false` + `guild: true`；旧写法第 5 位 `0`、第 6 位 `1`） | `GUILDS`、`GUILD_MESSAGE_REACTIONS`、`DIRECT_MESSAGE`、`GUILD_MESSAGES` |
 | 都没声明 | 空 |
 
 其中 `INTERACTION` 是给消息按钮里的**回调按钮**（`keyboard` 里 `action.type=1`）用的：
@@ -143,7 +158,7 @@ intents:
   本版已加：`connectTimeout` 超时判定失败、`maxRetry` 次数上限、`retryDelay` 递增退避。
 - 添加账号后收不到回复：以前的 `login()` 在握手被拒时**永久挂起**，现在会超时/被拒后返回"账号连接失败"。
 
-> 另外 `#QQBot设置` 的配置落盘有 3 秒防抖，设置成功后请稍等几秒再重启，确认 `config/config/cfg.yaml: token` 已写入。
+> 另外 `#QQBot设置` 的配置落盘有 3 秒防抖，设置成功后请稍等几秒再重启，确认 `config/config/cfg.yaml: accounts` 已写入。
 
 ### 白名单
 
@@ -335,7 +350,7 @@ sendMode:
 ## 命令
 
 - `#QQBot账号`
-- `#QQBot设置` + `机器人QQ号:AppID:Token:AppSecret:是否群Bot:是否频道私域`（是 1 否 0；最后一段 2 为 WebHook）；重复发送同一串即删除该账号
+- `#QQBot设置` + `机器人QQ号:AppID:AppSecret`（3 段简写，默认群Bot）；4 段及以上按旧格式 `机器人QQ号:AppID:Token:AppSecret[:是否群Bot[:是否频道私域]]`（Token 段忽略，是 1 否 0，末段 2 为 WebHook）；重复发送同一个机器人即删除该账号
 - `#QQBotMD` + `机器人QQ号:raw/inline/legacy`（MD 按钮消息 / MD 消息 / 普通消息）
 - `#QQBot发送模式` + `[机器人QQ号:]markdown/text/auto`（不带参数为查询当前模式）
 - `#QQBot图片限制` + `数字`（MB，默认 3）
@@ -362,5 +377,12 @@ markdown:
   template: abcdefghij
 sendMode:
   default: auto         # markdown / text / auto（见上文「发送模式」）
-token: []               # #QQBot设置 生成的账号列表
+accounts:               # 账号列表：只填开放平台的 AppID / AppSecret（推荐写法）
+  - uin: 3889013403     # 机器人QQ号（账号标识；可省略，省略时用 appid 顶替）
+    appid: 102091829    # 开放平台 AppID
+    secret: xxxxxxxxxx  # 开放平台 AppSecret（重置后要同步改）
+    group: true         # 群聊 + C2C 私聊（默认 true）
+    guild: false        # 频道（默认 false）
+    webhook: false      # true 走 WebHook（需 webhookPort + 公网 url）
+token: []               # 旧写法（#QQBot设置 写过的历史数据），含义同 accounts，留空即可
 ```
