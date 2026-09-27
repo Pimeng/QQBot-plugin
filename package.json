@@ -1,0 +1,19 @@
+{
+  "name": "QQBot-Plugin",
+  "version": "1.0.0",
+  "description": "Yunzai 的 QQ 官方机器人（QQBot）适配器，提供与 icqq 一致的插件使用体验",
+  "main": "index.js",
+  "type": "module",
+  "keywords": ["yunzai", "qqbot", "adapter", "qq-official-bot"],
+  "author": "TimeRainStarSky",
+  "license": "GPL-3.0",
+  "dependencies": {
+    "qq-official-bot": "1.3.0",
+    "qrcode": "^1.5.4",
+    "sharp": "^0.34.5",
+    "silk-wasm": "^3.7.1",
+    "tweetnacl": "^1.0.3",
+    "ulid": "^3.0.2",
+    "url-regex-safe": "^4.0.0"
+  }
+}

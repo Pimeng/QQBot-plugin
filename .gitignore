@@ -1,0 +1,4 @@
+node_modules
+config/config/cfg.yaml
+config/config/botlist.json
+pnpm-lock.yaml

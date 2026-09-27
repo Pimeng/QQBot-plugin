@@ -1,0 +1,55 @@
+# QQBot（QQ 官方机器人）适配器默认配置
+# 用户配置写在同目录 config/config/cfg.yaml（首次加载从本文件复制生成），改本文件无效。
+tips:
+  - 欢迎使用 QQBot Plugin（Miao-Yunzai 适配版），原作者：时雨🌌星空
+  - 上游：https://github.com/TimeRainStarSky/Yunzai-QQBot-Plugin
+  - 数据存 data/QQBot 下的 json；WebHook 端口与公网地址见本文件 webhookPort / url
+# 指令权限（master / admin / 主人QQ号 等，交给 miao 的权限系统判断）
+permission: master
+# 把消息里的链接转成二维码（true / false / 正则）
+toQRCode: true
+# 是否把 markdown 消息里的链接转成回调
+toCallback: true
+# 是否允许把图片先上传到 QQ 官方素材库再发送
+toBotUpload: true
+# 频道撤回消息时是否对所有人隐藏
+hideGuildRecall: false
+# 图片压缩阈值（MB），0 表示不压缩（未安装 sharp 时自动关闭）
+imageLength: 3
+markdown:
+  # markdown 模板 id（QQ 开放平台「模板」里配置的原始 id）
+  template: abcdefghij
+# 发送模式：auto（默认，只有显式 markdown / 按钮才走 markdown，其余硬拆成普通消息）
+#           markdown（强制所有消息走 markdown）/ text（始终普通消息）
+# 也可按机器人 QQ 号覆盖：sendMode: { default: auto, "3889013403": markdown }
+sendMode:
+  default: auto
+bot:
+  # 是否使用沙箱环境（sandbox.api.sgroup.qq.com）
+  sandbox: false
+  # 断线重连次数
+  maxRetry: 3
+  # 请求超时（毫秒）
+  timeout: 30000
+  # 连接超时（握手阶段，毫秒）
+  connectTimeout: 30000
+  # 断线重连基础间隔，按次数递增（毫秒）
+  retryDelay: 5000
+# 手动指定 intents，留空则按账号类型自动生成并逐级降级
+# 例：["GROUP_AT_MESSAGE_CREATE", "C2C_MESSAGE_CREATE", "INTERACTION"]
+intents: []
+# 额外的主人（官方 Bot 的 user_id 是 openid，无法用 QQ 号匹配时用 #QQBot绑定用户）
+master: []
+# 引用回复（被动回复）策略：
+#   auto（默认）有 message_id 就引用；被 QQ 拒绝后 5 分钟内改用主动消息，到期自动恢复
+#   true  始终作为主动消息发送（不加引用）
+#   false 始终按被动回复发（失败就失败）
+activeMsg: auto
+# 是否转义 markdown 语法字符（颜文字被误解析时保持 true；需要原始 markdown 时设为 false）
+escapeMarkdown: true
+# WebHook 监听端口，0 表示不启用；公网需自行反代到 /QQBot
+webhookPort: 0
+# 公网地址，用于把图片等文件转成可被 QQ 拉取的直链，如 https://bot.example.com
+url: ""
+# 账号 token：QQ号:AppID:Token:Secret:类型(1/2):模式(0/1)
+token: []
