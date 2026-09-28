@@ -1,8 +1,8 @@
 # QQBot（QQ 官方机器人）适配器默认配置
 # 用户配置写在同目录 config/config/cfg.yaml（首次加载从本文件复制生成），改本文件无效。
 tips:
-  - 欢迎使用 QQBot Plugin（Miao-Yunzai 适配版），原作者：时雨🌌星空
-  - 上游：https://github.com/TimeRainStarSky/Yunzai-QQBot-Plugin
+  - 欢迎使用 QQBot Plugin（Miao-Yunzai 适配版）
+  - 仓库：https://github.com/Pimeng/QQBot-plugin
   - 数据存 data/QQBot 下的 json；WebHook 端口与公网地址见本文件 webhookPort / url
 # 指令权限（master / admin / 主人QQ号 等，交给 miao 的权限系统判断）
 permission: master
