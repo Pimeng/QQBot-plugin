@@ -17,7 +17,7 @@ import SDK from "qq-official-bot"
 export const SDK_NAME = "qq-official-bot"
 export const SDK_VERSION = "1.3.0"
 
-export const { Bot, QQEvent, getFileBase64, Intends, ReceiverMode } = SDK
+export const { Bot, resolveGatewayEvent, getFileBase64, Intends, ReceiverMode } = SDK
 
 const { FileProcessor, md5, sha1, md5_10m } = SDK
 
