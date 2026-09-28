@@ -18,6 +18,8 @@ export default class BotApi extends MessageSender {
       ...i,
       /** pickFriend(...).sendMsg 是主动推送，不是回复（不拿缓存的上一条消息当引用） */
       sendMsg: msg => this.sendFriendMsg(i, msg, true),
+      sendFile: (file, name) =>
+        this.sendFriendMsg(i, { type: "file", file, ...(name ? { name } : {}) }, true),
       recallMsg: message_id => this.recallFriendMsg(i, message_id),
       makeForwardMsg: nodes => this.makeForwardMsg(nodes),
       getAvatarUrl: () => `https://q.qlogo.cn/qqapp/${i.bot.info.appid}/${i.user_id}/0`,
@@ -55,6 +57,8 @@ export default class BotApi extends MessageSender {
       ...i,
       /** pickGroup(...).sendMsg 是主动推送，不是回复（不拿群里最后一条消息当引用） */
       sendMsg: msg => this.sendGroupMsg(i, msg, true),
+      sendFile: (file, name) =>
+        this.sendGroupMsg(i, { type: "file", file, ...(name ? { name } : {}) }, true),
       recallMsg: message_id => this.recallGroupMsg(i, message_id),
       makeForwardMsg: nodes => this.makeForwardMsg(nodes),
       pickMember: user_id => this.pickMember(id, group_id, user_id),
