@@ -11,9 +11,24 @@ QQBot-Plugin 是面向 Elia-Yunzai 的 QQ 官方机器人适配器
 
 - 支持多个 QQ 官方机器人账号
 - 支持群聊、C2C 私聊和频道事件（按账号能力配置）
-- 支持 WebSocket，或配置 WebHook 接收事件
+- 支持 WebSocket，或配置 WebHook 接收事件（推荐Websocket，官方已支持直接上传图片无需 WebHook）
 - 支持普通消息、Markdown、按钮、图片及常见媒体消息
 - 提供账号管理、发送模式、图片限制和用户绑定命令
+
+## 可用性
+
+Yunzai：
+- [x] **Elia-Yunzai**：**完美**适配
+- [x] **Miao-Yunzai**：理论可用
+- ~~[ ] **TRSS-Yunzai**：不可用，请使用[官方版](https://github.com/TimeRainStarSky/Yunzai-QQBot-Plugin)或其fork~~
+
+发送：
+- [ ] 文件：异常
+- [x] 文本消息：正常
+- [x] Markdown 消息：正常
+- [x] 按钮：正常
+- [x] 图文：正常
+- [ ] @：如打开全量消息，可能无法正常使用，Markdown无视，可正常@
 
 ## 安装
 
