@@ -15,7 +15,7 @@
  *   adapter/sdk.js      qq-official-bot SDK 适配层
  *   lib/index.js        统一出口（qqbotCommon / cfg / config / configSave）
  *   lib/bot.js          全局 Bot 代理（跨适配器 pick*）
- *   lib/uin.js          Bot.uin 多账号 shim
+ *   lib/uin.js          宿主 Bot.uin 单账号值快照
  *   lib/plugin.js       管理指令插件
  *   lib/utils/cfg.js    插件内配置读写
  *   lib/utils/common.js 日志 / 持久化 / WebHook / 消息工具

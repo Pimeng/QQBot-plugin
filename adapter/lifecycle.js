@@ -193,7 +193,10 @@ export default class AdapterLifecycle {
       if (account.webhook) {
         await Bot[id].sdk.sessionManager.getAccessToken()
         Bot[id].login = () => (this.appid[opts.appid] = Bot[id])
-        Bot[id].logout = () => delete this.appid[opts.appid]
+        Bot[id].logout = () => {
+          markAdapterId(id, false)
+          return delete this.appid[opts.appid]
+        }
       }
 
       await Bot[id].login()
