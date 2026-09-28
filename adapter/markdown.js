@@ -1,7 +1,6 @@
 import { config } from "../lib/utils/cfg.js"
 import {
   escapeMarkdownText,
-  fileToUrl,
   hasAtSegment,
   markdownImage,
   normalizeForwardNodes,
@@ -45,8 +44,7 @@ export default class MarkdownBuilder extends MessageBuilder {
           messages.push([i])
           break
         case "file":
-          if (i.file) i.file = await fileToUrl(i.file, i)
-          content += await this.makeRawMarkdownText(data, `文件：${i.file}`, keyboard && button)
+          medias.push(i)
           break
         case "at": {
           /** 拿不到 id 时不渲染标签，避免出现 id="undefined" / id="0" */
@@ -239,8 +237,7 @@ export default class MarkdownBuilder extends MessageBuilder {
           messages.push([i])
           break
         case "file":
-          if (i.file) i.file = await fileToUrl(i.file, i)
-          content += this.makeTextChain(data, { text: `文件：${i.name || i.file}`, link: i.file })
+          medias.push(i)
           break
         case "at": {
           /** 拿不到 id 时不渲染标签，避免出现 id="undefined" / id="0" */

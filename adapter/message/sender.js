@@ -191,6 +191,10 @@ export default class MessageSender extends MessageTransport {
           return rets
         }
       }
+      if (msgs.some(i => i.some(s => s?.type === "file"))) {
+        if (Array.isArray(data._ret_id)) data._ret_id.push(...rets.message_id)
+        return rets
+      }
       msgs = await this.buildPlainMsgs(data, msg)
       await sendAll()
     }
@@ -201,12 +205,20 @@ export default class MessageSender extends MessageTransport {
 
   /** active: true 表示主动推送（不带 msg_id），不属于回复；普通回复不要传 */
   sendFriendMsg(data, msg, active = false) {
-    if (active) data = { ...data, active: true }
+    data = {
+      ...data,
+      ...(active ? { active: true } : {}),
+      _mediaTarget: { target_type: "user", target_id: data.user_id },
+    }
     return this.sendMsg(data, msg => data.bot.sdk.sendPrivateMessage(data.user_id, adaptSendableForSDK(msg)), msg)
   }
 
   sendGroupMsg(data, msg, active = false) {
-    if (active) data = { ...data, active: true }
+    data = {
+      ...data,
+      ...(active ? { active: true } : {}),
+      _mediaTarget: { target_type: "group", target_id: data.group_id },
+    }
     return this.sendMsg(data, msg => data.bot.sdk.sendGroupMessage(data.group_id, adaptSendableForSDK(msg)), msg)
   }
 

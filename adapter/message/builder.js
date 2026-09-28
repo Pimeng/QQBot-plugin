@@ -1,7 +1,6 @@
 import { config } from "../../lib/utils/cfg.js"
 import {
   expandForwardNodes,
-  fileToUrl,
   log,
   normalizeForwardNodes,
   sharp,
@@ -303,8 +302,6 @@ export default class MessageBuilder extends MessageMedia {
           if (sharp && i.file) i.file = await this.compressImage(data, i.file)
           break
         case "file":
-          if (i.file) i.file = await fileToUrl(i.file, i)
-          i = { type: "text", text: `文件：${i.file}` }
           break
         case "reply":
           reply = i

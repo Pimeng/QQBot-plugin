@@ -178,6 +178,25 @@ export function flattenReceivedMessage(msg) {
   })
 }
 
+function normalizeReceivedFiles(message) {
+  return message.map(item => {
+    if (!item || typeof item !== "object") return item
+    const isFile = item.type === "file"
+    if (!isFile && ["image", "video", "audio"].includes(item.type)) return item
+
+    const url = item.url ?? item.data?.url
+    if (!isFile && (typeof url !== "string" || !url)) return item
+
+    const name = item.name ?? item.filename ?? item.data?.name ?? item.data?.filename
+    return {
+      ...item,
+      type: "file",
+      file: item.file ?? url,
+      ...(name ? { name } : {}),
+    }
+  })
+}
+
 /**
  * 创建 SDK 实例
  *
@@ -277,8 +296,8 @@ export function normalizeEvent(event) {
   if (event.user_name === undefined && sender?.user_name !== undefined)
     event.user_name = sender.user_name
 
-  if (Array.isArray(event.message) && event.message.some(i => i && typeof i === "object" && i.data))
-    event.message = flattenReceivedMessage(event.message)
+  if (Array.isArray(event.message))
+    event.message = normalizeReceivedFiles(flattenReceivedMessage(event.message))
 
   return event
 }

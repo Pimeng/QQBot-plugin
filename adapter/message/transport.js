@@ -4,6 +4,9 @@ import MarkdownBuilder from "../markdown.js"
 
 export default class MessageTransport extends MarkdownBuilder {
   mediaTarget(data) {
+    const target = data._mediaTarget
+    if (target?.target_type && target.target_id) return target
+
     const type = data.raw?.message_type
     if (type === "group" && data.group_id) return { target_type: "group", target_id: data.group_id }
     if (type === "private" && data.sub_type === "friend" && data.user_id)
@@ -18,22 +21,41 @@ export default class MessageTransport extends MarkdownBuilder {
    * （带 msg_id）单独发，不占用主动消息频次。
    */
   async uploadFileInfo(data, elem, target) {
-    const fileType = { image: 1, video: 2, audio: 3 }[elem.type]
+    const fileType = { image: 1, video: 2, audio: 3, file: 4 }[elem.type]
     if (!fileType) return null
+    const file = elem.file ?? elem.url
+    const url =
+      typeof elem.url === "string" && /^https?:\/\//i.test(elem.url)
+        ? elem.url
+        : typeof file === "string" && /^https?:\/\//i.test(file)
+          ? file
+          : ""
+    let fileName = elem.name || elem.file_name || elem.filename
+    if (!fileName && url)
+      try {
+        fileName = decodeURIComponent(new URL(url).pathname.split("/").pop()) || "file.bin"
+      } catch (err) {
+        fileName = "file.bin"
+      }
+    const payload = { file_type: fileType, file_name: fileName }
+    if (url) payload.url = url
+    else payload.file = file
+
     try {
       const info = await data.bot.sdk.fileProcessor.uploadForMessage(
-        { file_type: fileType, file: elem.file, file_name: elem.name || elem.file_name },
+        payload,
         { targetType: target.target_type, targetId: target.target_id, sendMessage: false },
       )
       log("debug", ["富媒体上传完成", target, info], data.self_id)
       return info
     } catch (err) {
       log("error", ["富媒体上传失败", elem.type, err], data.self_id)
+      if (elem.type === "file") throw err
       return null
     }
   }
 
-  /** 单独发一条富媒体消息（msg_type 7），带引用时走被动回复；content 作为图片下方文字 */
+  /** 单独发一条富媒体消息（msg_type 7），带引用时走被动回复 */
   async sendFileInfoMessage(data, target, info, reply, content = "") {
     const payload = {
       msg_type: 7,
@@ -69,7 +91,7 @@ export default class MessageTransport extends MarkdownBuilder {
    *   - caption 被平台拒绝（例如超长）时退回「媒体一条 + 文字一条」，不让整条消息发不出去。
    */
   async sendBatch(data, batch, send) {
-    const isMedia = s => ["image", "video", "audio"].includes(s?.type)
+    const isMedia = s => ["image", "video", "audio", "file"].includes(s?.type)
     const media = batch.filter(isMedia)
     if (!media.length) return await send(batch)
 
@@ -82,7 +104,11 @@ export default class MessageTransport extends MarkdownBuilder {
     const infos = []
     for (const elem of media) {
       const info = await this.uploadFileInfo(data, elem, target)
-      if (!info?.file_info) return await send(batch)
+      if (!info?.file_info) {
+        if (media.some(item => item?.type === "file"))
+          throw new Error("包含文件的消息富媒体上传未返回 file_info")
+        return await send(batch)
+      }
       infos.push(info)
     }
 
