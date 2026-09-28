@@ -36,7 +36,7 @@ Yunzai：
 
 ```bash
 git clone --depth=1 https://github.com/Pimeng/QQBot-plugin ./plugins/QQBot-plugin
-pnpm i --filter ./plugins/QQBot-plugin
+pnpm i --filter ./plugins/QQBot-Plugin
 ```
 
 安装后重启 Yunzai。插件首次启动时会生成 `config/config/cfg.yaml`
