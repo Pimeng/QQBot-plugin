@@ -4,6 +4,13 @@ import { SDK_NAME, SDK_VERSION } from "./sdk.js"
 import { bindAdapter } from "../lib/utils/common.js"
 import AdapterEvents from "./events.js"
 
+if (globalThis.segment && typeof globalThis.segment.file !== "function")
+  globalThis.segment.file = (file, name) => ({
+    type: "file",
+    file,
+    ...(name ? { name } : {}),
+  })
+
 export default class QQBotAdapter extends AdapterEvents {
   constructor() {
     super()
