@@ -23,12 +23,12 @@ Yunzai：
 - ~~[ ] **TRSS-Yunzai**：不可用，请使用[官方版](https://github.com/TimeRainStarSky/Yunzai-QQBot-Plugin)或其fork~~
 
 发送：
-- [ ] 文件：异常
+- [x] 文件：正常
 - [x] 文本消息：正常
 - [x] Markdown 消息：正常
 - [x] 按钮：正常
 - [x] 图文：正常
-- [ ] @：如打开全量消息，可能无法正常使用，Markdown无视，可正常@
+- ？ @：如打开全量消息，可能无法正常使用，Markdown无视，可正常@
 
 ## 安装
 
