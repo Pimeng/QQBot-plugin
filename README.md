@@ -69,8 +69,8 @@ accounts:
 
 ## 致谢
 
-[TimeRainStarSky 原作者](https://github.com/TimeRainStarSky)
-[Yunzai-QQBot-Plugin 原作](https://github.com/TimeRainStarSky/Yunzai-QQBot-Plugin)
+- [TimeRainStarSky 原作者](https://github.com/TimeRainStarSky)
+- [Yunzai-QQBot-Plugin 原作](https://github.com/TimeRainStarSky/Yunzai-QQBot-Plugin)
 
 ## 许可证
 
