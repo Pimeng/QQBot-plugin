@@ -3,7 +3,15 @@
  *
  * 目录结构（与 napcat-adapter / snowluma-adapter 保持一致）：
  *   index.js            入口：拉起适配器、导出管理指令插件
- *   adapter/index.js    适配器主体
+ *   adapter/index.js    适配器组装、配置和单例出口
+ *   adapter/lifecycle.js 账号连接、intents 协商与 WebHook 生命周期
+ *   adapter/message/builder.js 普通消息段、@ 与转发节点构建
+ *   adapter/message/media.js   语音、图片、二维码和按钮辅助
+ *   adapter/markdown.js Markdown 模板与官方标签构建
+ *   adapter/message/sender.js 消息组装、回复策略与发送协调
+ *   adapter/message/transport.js 富媒体上传与批次传输
+ *   adapter/bot-api.js Bot.pick* 对象与主动消息代理
+ *   adapter/events.js 入站消息、交互、通知与缓存
  *   adapter/sdk.js      qq-official-bot SDK 适配层
  *   lib/index.js        统一出口（qqbotCommon / cfg / config / configSave）
  *   lib/bot.js          全局 Bot 代理（跨适配器 pick*）

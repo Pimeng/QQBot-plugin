@@ -5,7 +5,13 @@
 ## 运行结构
 
 - `index.js` 注册管理指令插件并调用 `qqbot.init()`；初始化具有幂等性。
-- `adapter/index.js` 负责账号连接、事件收发、消息转换和 WebHook 路由。
+- `adapter/index.js` 组装适配器实例并导出单例；功能模块沿继承链组合，保留原有 `qqbot` 实例 API。
+- `adapter/lifecycle.js` 负责账号连接、intents 降级协商、重连状态登记与 WebHook 生命周期。
+- `adapter/message/builder.js` 负责普通消息段、@ 解析和转发节点；`adapter/message/media.js` 负责语音/图片转换、二维码及按钮构建。
+- `adapter/markdown.js` 独立处理 QQ Markdown 模板及标签。
+- `adapter/message/sender.js` 负责消息组装、回复策略、重试和交互检查；`adapter/message/transport.js` 负责富媒体上传与批次传输。
+- `adapter/bot-api.js` 提供 `pickFriend`、`pickGroup` 等 Bot 对象代理。
+- `adapter/events.js` 负责将消息、按钮交互和通知转换为 Yunzai 事件，并维护好友、群和成员缓存。
 - `adapter/sdk.js` 封装 `qq-official-bot@1.3.0` 的接口差异，包括 WebSocket 模式、沙箱地址、事件与消息段转换，以及媒体分片上传处理。
 - `lib/` 提供账号、配置、Bot 代理、事件构造与通用工具。
 - `config/defSet/cfg.yaml` 是随插件发布的默认配置；实际配置位于 `config/config/cfg.yaml`。首次启动时会复制默认配置，之后该文件的外部改动会热加载。
