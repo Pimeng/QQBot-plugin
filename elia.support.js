@@ -85,21 +85,34 @@ function parseAccounts(value) {
   const appids = new Set()
   const uins = new Set()
 
-  return entries.map((entry, index) => {
+  return entries.filter(entry => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return true
+    const uin = entry["机器人QQ号"] ?? entry.uin
+    const appid = entry.AppID ?? entry.appid
+    const secret = entry.AppSecret ?? entry.secret
+    return [uin, appid, secret].some(value => value != null && String(value).trim())
+  }).map((entry, index) => {
     const label = `账号 ${index + 1}`
     if (!entry || typeof entry !== "object" || Array.isArray(entry))
       throw new Error(`${label}必须是键值对象`)
 
-    const appid = textValue(entry.appid ?? "", `${label} AppID`)
+    const appid = textValue(entry.AppID ?? entry.appid ?? "", `${label} AppID`)
     if (!appid) throw new Error(`${label}缺少 AppID`)
-    const uin = textValue(entry.uin ?? appid, `${label}机器人标识`) || appid
-    const secretInput = entry.secret == null ? "" : textValue(entry.secret, `${label} AppSecret`)
+    const uin = textValue(entry["机器人QQ号"] ?? entry.uin ?? appid, `${label}机器人标识`) || appid
+    const secretValue = entry.AppSecret ?? entry.secret
+    const secretInput = secretValue == null ? "" : textValue(secretValue, `${label} AppSecret`)
     const secret = secretInput || existing.get(appid)?.secret || ""
     if (!secret) throw new Error(`${label}缺少 AppSecret；新增账号时请填写密钥`)
 
-    for (const key of ["group", "guild", "webhook"]) {
-      if (entry[key] !== undefined && typeof entry[key] !== "boolean")
-        throw new Error(`${label}的 ${key} 必须是 true 或 false`)
+    const options = [
+      ["群聊", "group"],
+      ["频道", "guild"],
+      ["WebHook", "webhook"],
+    ]
+    for (const [displayKey, configKey] of options) {
+      const option = entry[displayKey] ?? entry[configKey]
+      if (option !== undefined && typeof option !== "boolean")
+        throw new Error(`${label}的 ${displayKey} 必须是 true 或 false`)
     }
     if (appids.has(appid)) throw new Error(`AppID ${appid} 重复`)
     if (uins.has(uin)) throw new Error(`机器人标识 ${uin} 重复`)
@@ -110,9 +123,9 @@ function parseAccounts(value) {
       uin,
       appid,
       secret,
-      group: entry.group,
-      guild: entry.guild,
-      webhook: entry.webhook,
+      group: entry["群聊"] ?? entry.group,
+      guild: entry["频道"] ?? entry.guild,
+      webhook: entry.WebHook ?? entry.webhook,
     })
   })
 }
@@ -123,14 +136,22 @@ function readAccounts() {
     accounts: Array.isArray(config.accounts) ? config.accounts : [],
     token: Array.isArray(config.token) ? config.token : [],
   }
-  return getAccounts(source).map(({ uin, appid, group, guild, webhook }) => ({
-    uin,
-    appid,
-    secret: "",
-    group,
-    guild,
-    webhook,
+  const accounts = getAccounts(source).map(({ uin, appid, group, guild, webhook }) => ({
+    "机器人QQ号": uin,
+    AppID: appid,
+    AppSecret: "",
+    "群聊": group,
+    "频道": guild,
+    WebHook: webhook,
   }))
+  return accounts.length ? accounts : [{
+    "机器人QQ号": "",
+    AppID: "",
+    AppSecret: "",
+    "群聊": true,
+    "频道": false,
+    WebHook: false,
+  }]
 }
 
 function readObject(value, fallback) {
@@ -154,23 +175,19 @@ export function supportPanel() {
         {
           field: "accounts",
           label: "机器人账号",
-          bottomHelpMessage: "使用 YAML 列表；secret 留空会保留已有 AppSecret。新增账号需填写 AppID 和 AppSecret。旧 token 格式保存时会迁移为 accounts。",
-          component: "InputTextArea",
-          componentProps: { rows: 12, spellCheck: false },
+          bottomHelpMessage: "每个账号单独编辑；已有账号的 AppSecret 不会回显，留空会保留原密钥。新增账号需填写 AppID 和 AppSecret。",
         },
         {
           field: "intents",
           label: "Intents",
           bottomHelpMessage: "每行一个；留空表示按账号能力自动申请。需要重启 Bot 生效。",
-          component: "InputTextArea",
-          componentProps: { rows: 5, spellCheck: false },
+          component: "GTags",
         },
         {
           field: "master",
           label: "额外主人",
-          bottomHelpMessage: "每行一个 QQ 号或平台 user_id。",
-          component: "InputTextArea",
-          componentProps: { rows: 3, spellCheck: false },
+          bottomHelpMessage: "QQ 号或平台 user_id；按 Enter 添加。",
+          component: "GTags",
         },
         { field: "bot.sandbox", label: "使用沙箱环境", component: "Switch" },
         {
@@ -250,9 +267,8 @@ export function supportPanel() {
         {
           field: "sendMode",
           label: "发送模式映射",
-          bottomHelpMessage: "使用 YAML 键值对象；键为 default 或机器人标识，值为 auto、markdown、text。",
-          component: "InputTextArea",
-          componentProps: { rows: 5, spellCheck: false },
+          bottomHelpMessage: "按 default 或机器人标识配置，值为 auto、markdown 或 text。",
+          component: "GSubForm",
         },
         {
           field: "markdown.template",
@@ -266,9 +282,9 @@ export function supportPanel() {
         const sendMode = readObject(config.sendMode, { default: "auto" })
         const accounts = readAccounts()
         return {
-          accounts: YAML.stringify(accounts).trimEnd(),
-          intents: Array.isArray(config.intents) ? config.intents.map(String).join("\n") : "",
-          master: Array.isArray(config.master) ? config.master.map(String).join("\n") : "",
+          accounts,
+          intents: Array.isArray(config.intents) ? config.intents.map(String) : [],
+          master: Array.isArray(config.master) ? config.master.map(String) : [],
           bot: {
             sandbox: bot.sandbox === true,
             maxRetry: Number(bot.maxRetry ?? 3),
@@ -286,7 +302,7 @@ export function supportPanel() {
           escapeMarkdown: config.escapeMarkdown !== false,
           imageLength: Number(config.imageLength ?? 3),
           activeMsg: config.activeMsg === true ? "true" : config.activeMsg === false ? "false" : "auto",
-          sendMode: YAML.stringify(sendMode).trimEnd(),
+          sendMode: { ...sendMode },
           markdown: { template: String(markdown.template ?? "") },
           _version: configVersion(),
         }
