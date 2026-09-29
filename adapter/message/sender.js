@@ -12,6 +12,7 @@ import {
   sendModeOf,
   sharp,
   toPlainMsg,
+  toSegment,
   toStr,
 } from "../../lib/utils/common.js"
 import MessageTransport from "./transport.js"
@@ -232,8 +233,9 @@ export default class MessageSender extends MessageTransport {
     msg = expandForwardNodes(normalizeForwardNodes(msg))
 
     for (let i of Array.isArray(msg) ? msg : [msg]) {
-      if (typeof i === "object") i = { ...i }
-      else i = { type: "text", text: toStr(i) }
+      /** Buffer / Uint8Array 按图片处理（icqq 同样行为），必须在展开前判断 */
+      i = toSegment(i)
+      if (!i) continue
 
       switch (i.type) {
         case "at": {

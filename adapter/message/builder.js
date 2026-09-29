@@ -5,6 +5,7 @@ import {
   normalizeForwardNodes,
   sharp,
   toBuffer,
+  toSegment,
   toStr,
 } from "../../lib/utils/common.js"
 import MessageMedia from "./media.js"
@@ -166,8 +167,9 @@ export default class MessageBuilder extends MessageMedia {
       const parts = []
       const list = Array.isArray(node.message) ? node.message : [node.message]
       for (let i of list) {
-        if (i === undefined || i === null) continue
-        if (typeof i !== "object") i = { type: "text", text: toStr(i) }
+        /** Buffer / Uint8Array 按图片处理，必须在展开前判断 */
+        i = toSegment(i)
+        if (!i) continue
         switch (i.type) {
           case "text":
             parts.push(await this.makeRawMarkdownText(data, i.text ?? ""))
@@ -255,8 +257,9 @@ export default class MessageBuilder extends MessageMedia {
     msg = expandForwardNodes(normalizeForwardNodes(msg))
 
     for (let i of Array.isArray(msg) ? msg : [msg]) {
-      if (typeof i === "object") i = { ...i }
-      else i = { type: "text", text: toStr(i) }
+      /** Buffer / Uint8Array 按图片处理（icqq 同样行为），必须在展开前判断 */
+      i = toSegment(i)
+      if (!i) continue
 
       switch (i.type) {
         case "at": {
