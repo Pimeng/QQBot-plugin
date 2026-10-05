@@ -268,7 +268,21 @@ export function supportPanel() {
           field: "sendMode",
           label: "发送模式映射",
           bottomHelpMessage: "按 default 或机器人标识配置，值为 auto、markdown 或 text。",
-          component: "GSubForm",
+          component: "KeyValue",
+          componentProps: {
+            keyLabel: "默认项或机器人标识",
+            keyPlaceholder: "default 或机器人 QQ 号 / AppID",
+            valueLabel: "发送模式",
+            defaultValue: "auto",
+            valueComponent: "Select",
+            valueProps: {
+              options: [
+                { label: "自动", value: "auto" },
+                { label: "强制 Markdown", value: "markdown" },
+                { label: "普通消息", value: "text" },
+              ],
+            },
+          },
         },
         {
           field: "markdown.template",

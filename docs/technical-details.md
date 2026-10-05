@@ -93,7 +93,7 @@ url: "https://bot.example.com"
 
 ### 发送模式与 Markdown
 
-`sendMode` 支持 `auto`、`markdown`、`text`，可为默认值和单个机器人分别设置：
+`sendMode` 支持 `auto`、`markdown`、`text`，可为默认值和单个机器人分别设置。EliaAdminPanel 的“发送模式映射”使用 `KeyValue` 控件，以 `default` 或机器人标识为键、下拉选择发送模式；可新增、改名和删除映射，保存仍为下面的键值对象：
 
 ```yaml
 sendMode:
