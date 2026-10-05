@@ -7,6 +7,7 @@ import {
   protectText,
   restoreText,
   sharp,
+  toSegment,
   toStr,
 } from "../lib/utils/common.js"
 import MessageBuilder from "./message/builder.js"
@@ -26,8 +27,9 @@ export default class MarkdownBuilder extends MessageBuilder {
     msg = normalizeForwardNodes(msg)
 
     for (let i of Array.isArray(msg) ? msg : [msg]) {
-      if (typeof i === "object") i = { ...i }
-      else i = { type: "text", text: toStr(i) }
+      /** Buffer / Uint8Array 按图片处理（icqq 同样行为），必须在展开前判断 */
+      i = toSegment(i)
+      if (!i) continue
 
       switch (i.type) {
         case "node":
@@ -219,8 +221,9 @@ export default class MarkdownBuilder extends MessageBuilder {
     msg = normalizeForwardNodes(msg)
 
     for (let i of Array.isArray(msg) ? msg : [msg]) {
-      if (typeof i === "object") i = { ...i }
-      else i = { type: "text", text: toStr(i) }
+      /** Buffer / Uint8Array 按图片处理（icqq 同样行为），必须在展开前判断 */
+      i = toSegment(i)
+      if (!i) continue
 
       switch (i.type) {
         case "node":
