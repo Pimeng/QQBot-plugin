@@ -57,6 +57,11 @@ export default class AdapterLifecycle {
   async connect(entry) {
     const account = normalizeAccount(entry)
     const id = account.uin
+    const restartNotice = webhook.restartNotice(account)
+    if (restartNotice) {
+      log("warn", restartNotice, id)
+      return false
+    }
     delete this.activeIntents[id]
 
     const explicit = Array.isArray(config.intents) && config.intents.length > 0
@@ -255,14 +260,8 @@ export default class AdapterLifecycle {
     if (this.started) return
     this.started = true
 
+    webhook.init()
     this.load().catch(err => log("error", ["QQBot 适配器启动错误", err]))
-
-    if (
-      Number(config.webhookPort) > 0 ||
-      config.url ||
-      getAccounts(config).some(account => account.webhook)
-    )
-      webhook.start()
   }
 
   async load() {

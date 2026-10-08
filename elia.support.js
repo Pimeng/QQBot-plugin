@@ -1,7 +1,9 @@
 import crypto from "node:crypto"
 import YAML from "yaml"
+import { isDeepStrictEqual } from "node:util"
 import { config, configSave } from "./lib/utils/cfg.js"
 import { getAccounts, normalizeAccount } from "./lib/utils/accounts.js"
+import { sharp, webhook } from "./lib/utils/common.js"
 
 const SEND_MODES = new Set(["auto", "markdown", "text"])
 const ACTIVE_MESSAGE_MODES = new Set(["auto", "true", "false"])
@@ -158,6 +160,75 @@ function readObject(value, fallback) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : fallback
 }
 
+/** 用与面板一致的默认值比较配置，避免补齐默认值也被误认为修改。 */
+function readSettings() {
+  const bot = readObject(config.bot, {})
+  const markdown = readObject(config.markdown, {})
+  return {
+    intents: Array.isArray(config.intents) ? config.intents.map(String) : [],
+    master: Array.isArray(config.master) ? config.master.map(String) : [],
+    bot: {
+      sandbox: bot.sandbox === true,
+      maxRetry: Number(bot.maxRetry ?? 3),
+      timeout: Number(bot.timeout ?? 30000),
+      connectTimeout: Number(bot.connectTimeout ?? 30000),
+      retryDelay: Number(bot.retryDelay ?? 5000),
+    },
+    webhookPort: Number(config.webhookPort ?? 0),
+    url: String(config.url ?? ""),
+    permission: String(config.permission ?? "master"),
+    toQRCode: String(config.toQRCode ?? true),
+    toCallback: config.toCallback !== false,
+    toBotUpload: config.toBotUpload !== false,
+    hideGuildRecall: config.hideGuildRecall === true,
+    escapeMarkdown: config.escapeMarkdown !== false,
+    imageLength: Number(config.imageLength ?? 3),
+    activeMsg: config.activeMsg === true ? "true" : config.activeMsg === false ? "false" : "auto",
+    sendMode: { ...readObject(config.sendMode, { default: "auto" }) },
+    markdown: { template: String(markdown.template ?? "") },
+  }
+}
+
+function readSaveState() {
+  return {
+    ...readSettings(),
+    accounts: getAccounts(config).sort((a, b) => a.uin.localeCompare(b.uin)),
+  }
+}
+
+function saveMessage(before) {
+  const after = readSaveState()
+  const changed = Object.keys(after).filter(key => !isDeepStrictEqual(before[key], after[key]))
+  const restartFields = {
+    accounts: "账号",
+    intents: "Intents",
+    bot: "Bot 连接参数",
+    permission: "管理指令权限",
+    toQRCode: "链接转二维码规则",
+  }
+  const hasWebhook = after.accounts.some(account => account.webhook)
+  if (hasWebhook || webhook.server) restartFields.webhookPort = "WebHook 端口"
+  if (after.imageLength > 0 && !sharp) restartFields.imageLength = "图片压缩"
+  const restart = changed.filter(key => restartFields[key])
+  const parts = ["配置已保存"]
+  if (!changed.length) parts.push("配置内容未变化")
+  else if (!restart.length) parts.push("本次修改无需重启")
+  else {
+    parts.push(`${restart.map(key => restartFields[key]).join("、")}变更需重启 Yunzai 生效`)
+    if (changed.some(key => !restartFields[key])) parts.push("其他修改无需重启")
+  }
+
+  if (hasWebhook) {
+    if (after.webhookPort === 0)
+      parts.push("WebHook 端口为 0，请配置有效端口并重启 Yunzai 后接入")
+    else if (webhook.initialized && !webhook.server?.listening)
+      parts.push("HTTP 服务未启动，WebHook 账号需要重启 Yunzai 后才能接入")
+  }
+  if (webhook.server?.listening && (!hasWebhook || after.webhookPort === 0))
+    parts.push("当前 HTTP 服务仍在运行，重启 Yunzai 后将关闭")
+  return parts.join("；")
+}
+
 export function supportPanel() {
   return {
     pluginInfo: {
@@ -217,7 +288,7 @@ export function supportPanel() {
         {
           field: "webhookPort",
           label: "WebHook 端口",
-          bottomHelpMessage: "0 表示关闭；启用还需配置公网地址和反向代理。修改后需重启 Bot。",
+          bottomHelpMessage: "0 表示关闭；仅启动时存在 WebHook 账号才监听，还需配置公网地址和反向代理。后续添加账号或修改端口需重启 Bot。",
           component: "InputNumber",
           componentProps: { min: 0, max: 65535, precision: 0 },
         },
@@ -291,33 +362,9 @@ export function supportPanel() {
         },
       ],
       async getConfigData() {
-        const bot = readObject(config.bot, {})
-        const markdown = readObject(config.markdown, {})
-        const sendMode = readObject(config.sendMode, { default: "auto" })
-        const accounts = readAccounts()
         return {
-          accounts,
-          intents: Array.isArray(config.intents) ? config.intents.map(String) : [],
-          master: Array.isArray(config.master) ? config.master.map(String) : [],
-          bot: {
-            sandbox: bot.sandbox === true,
-            maxRetry: Number(bot.maxRetry ?? 3),
-            timeout: Number(bot.timeout ?? 30000),
-            connectTimeout: Number(bot.connectTimeout ?? 30000),
-            retryDelay: Number(bot.retryDelay ?? 5000),
-          },
-          webhookPort: Number(config.webhookPort ?? 0),
-          url: String(config.url ?? ""),
-          permission: String(config.permission ?? "master"),
-          toQRCode: typeof config.toQRCode === "boolean" ? String(config.toQRCode) : String(config.toQRCode ?? "true"),
-          toCallback: config.toCallback !== false,
-          toBotUpload: config.toBotUpload !== false,
-          hideGuildRecall: config.hideGuildRecall === true,
-          escapeMarkdown: config.escapeMarkdown !== false,
-          imageLength: Number(config.imageLength ?? 3),
-          activeMsg: config.activeMsg === true ? "true" : config.activeMsg === false ? "false" : "auto",
-          sendMode: { ...sendMode },
-          markdown: { template: String(markdown.template ?? "") },
+          ...readSettings(),
+          accounts: readAccounts(),
           _version: configVersion(),
         }
       },
@@ -328,9 +375,10 @@ export function supportPanel() {
           return Result.error("配置已被其他操作修改，请刷新后重试")
 
         try {
+          const before = readSaveState()
           const botConfig = readObject(config.bot, {})
           const markdownConfig = readObject(config.markdown, {})
-          const activeMsg = textValue(fieldValue(data, "activeMsg") ?? "auto", "引用回复策略")
+          const activeMsg = textValue(fieldValue(data, "activeMsg") ?? before.activeMsg, "引用回复策略")
           if (!ACTIVE_MESSAGE_MODES.has(activeMsg))
             throw new Error("引用回复策略只能是 auto、true 或 false")
 
@@ -419,7 +467,7 @@ export function supportPanel() {
           }
           configSave()
           configSave.flush()
-          return Result.ok({}, "配置已保存；账号、Intents、Bot 连接参数及 WebHook 端口变更需重启 Bot 生效")
+          return Result.ok({}, saveMessage(before))
         } catch (error) {
           return Result.error(error?.message || "配置保存失败")
         }

@@ -78,6 +78,8 @@ accounts:
 
 默认使用 WebSocket。使用 WebHook 时，在 `cfg.yaml` 中设置 `webhook: true`、`webhookPort` 和公网 `url`，并将 QQ 开放平台回调地址配置为 `https://你的域名/QQBot`。WebHook 需要公网 HTTPS 和正确的反向代理。
 
+仅在插件启动时存在有效 WebHook 账号且 `webhookPort` 大于 `0` 时启动内置 HTTP 服务。首次安装尚未配置账号、没有 WebHook 账号时均不监听端口；后续添加 WebHook 账号会提示需要重启 Yunzai 才能接入。HTTP 服务未启动时，本地 Markdown 图片会回退为普通图片消息。
+
 ## 文档
 
 配置字段、事件权限、消息发送行为、媒体处理和常见故障排查见[技术说明](docs/technical-details.md)。

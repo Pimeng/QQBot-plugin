@@ -47,7 +47,7 @@ master: []
 activeMsg: auto
 # 是否转义 markdown 语法字符（颜文字被误解析时保持 true；需要原始 markdown 时设为 false）
 escapeMarkdown: true
-# WebHook 监听端口，0 表示不启用；公网需自行反代到 /QQBot
+# WebHook 监听端口，0 表示不启用；仅启动时存在 WebHook 账号才监听，后续添加需重启；公网需自行反代到 /QQBot
 webhookPort: 0
 # 公网地址，用于把图片等文件转成可被 QQ 拉取的直链，如 https://bot.example.com
 url: ""
