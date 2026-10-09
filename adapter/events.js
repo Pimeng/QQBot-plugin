@@ -155,6 +155,7 @@ export default class AdapterEvents extends BotApi {
       message_type: event.message_type,
       sub_type: event.sub_type,
       message_id: event.message_id,
+      source: event.source,
       time: event.timestamp,
       get user_id() {
         return this.sender.user_id

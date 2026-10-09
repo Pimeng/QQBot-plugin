@@ -219,6 +219,13 @@ export function createBot(opts = {}) {
   if (opts.sandbox) config.apiBaseUrl = SANDBOX_API_BASE
 
   const sdk = new Bot(config)
+  const rawProcessPayload = sdk.processPayload.bind(sdk)
+  sdk.processPayload = (id, name, payload) => {
+    const type = payload?.message_type
+    const parsed = rawProcessPayload(id, name, payload)
+    if (parsed && Number(type) === 103) parsed._qqbotMessageType = 103
+    return parsed
+  }
 
   /**
    * 标注真实事件名
@@ -290,6 +297,7 @@ export function normalizeEvent(event) {
 
   const sender = event.sender
   if (sender && typeof sender === "object") {
+    if (event.author?.member_role !== undefined && sender.member_role === undefined) sender.member_role = event.author.member_role
     if (sender.nickname === undefined) sender.nickname = sender.user_name
     if (sender.card === undefined) sender.card = sender.user_name
   }
@@ -299,5 +307,29 @@ export function normalizeEvent(event) {
   if (Array.isArray(event.message))
     event.message = normalizeReceivedFiles(flattenReceivedMessage(event.message))
 
+  normalizeQuotedEvent(event)
+
+  return event
+}
+
+/** QQ 引用事件 103 将被引用内容放在 msg_elements[0]，SDK 1.3.0 未解析。 */
+export function normalizeQuotedEvent(event) {
+  const reference = event.message_reference || event.source
+  const quoted = Number(event._qqbotMessageType ?? event.message_type) === 103 && Array.isArray(event.msg_elements)
+    ? event.msg_elements[0] : undefined
+  if (!reference && !quoted) return event
+  const nested = reference?.message || reference?.referenced_message || reference?.source_message
+  const content = [reference?.raw_message, reference?.content, nested?.content, quoted?.content].find(value => typeof value === "string" && value.trim())
+  const attachments = nested?.attachments || quoted?.attachments
+  const summary = content?.trim().slice(0, 500) || (Array.isArray(attachments) ? attachments.slice(0, 10).map(item => {
+    const mime = String(item?.content_type || "")
+    return mime.startsWith("image/") ? "[图片]" : mime.startsWith("audio/") ? "[语音]" : mime.startsWith("video/") ? "[视频]" : "[附件]"
+  }).join("") : "")
+  // msg_idx is a separate QQ index, not an OpenAPI message ID. Do not invent a
+  // message_id or match other messages merely by identical text.
+  const messageId = reference?.message_id ?? reference?.id ?? quoted?.message_id ?? ""
+  event.source = { message_id: typeof messageId === "string" ? messageId.slice(0, 200) : "", ...(summary ? { raw_message: summary } : {}) }
+  if (!Array.isArray(event.message)) event.message = []
+  if (!event.message.some(segment => segment?.type === "reply")) event.message.unshift({ type: "reply", id: event.source.message_id, ...(summary ? { text: summary } : {}) })
   return event
 }

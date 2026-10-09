@@ -16,7 +16,7 @@
 - `lib/` 提供账号、配置、Bot 代理、事件构造与通用工具。
 - `config/defSet/cfg.yaml` 是随插件发布的默认配置；实际配置位于 `config/config/cfg.yaml`。首次启动时会复制默认配置，之后该文件的外部改动会热加载。
 
-适配器通过 Yunzai 的全局 `Bot`、`logger`、`segment` 等运行环境工作。收到的消息会构造成 Yunzai 事件并通过 `Bot.emit("message", event)` 投递；若没有消息事件监听器，则直接交给插件加载器处理。事件标记 `adapter = "QQBot"`，消息 ID 会去除平台实例前缀。
+适配器通过 Yunzai 的全局 `Bot`、`logger`、`segment` 等运行环境工作。收到的消息会构造成 Yunzai 事件并通过 `Bot.emit("message", event)` 投递；监听器检测同时兼容 Node EventEmitter 的 listenerCount 与 ICQQ TripTrap 的 listeners，不要求存在 listenerCount。若没有消息事件监听器，则直接交给插件加载器处理。事件标记 `adapter = "QQBot"`，消息 ID 会去除平台实例前缀。
 
 ## 账号与配置
 
@@ -147,3 +147,5 @@ SDK 的媒体分片上传在平台分片序号从 1 开始时需要归一化偏�
 - **Markdown 拒绝或客户端显示空白**：确认机器人 Markdown 能力及模板/内容合法性；必要时将 `sendMode` 调为 `text` 或 `auto`。
 - **收不到群或用户消息**：检查 Yunzai 的 `whiteGroup`、`whiteQQ` 白名单是否包含对应群号或用户标识。
 - **Markdown 本地图片直链不可见**：确认 `url` 是公网 HTTPS 地址、启动时已配置有效 WebHook 账号和 `webhookPort`，且反向代理可访问 `/QQBot/File/`；服务未启动时会回退为普通图片消息。
+
+QQBot 引用事件（类型 103）的原消息内容位于 msg_elements[0]。适配层保留该类型并转换为 reply 段与 source 摘要，正文独立展示；纯引用也显示引用卡片。msg_idx 与 OpenAPI 消息 ID 是不同标识，不凭文本相同猜测跳转对象；缺少可定位消息 ID 时显示摘要并禁用跳转。旧缓存中已经丢失的内容无法恢复，只显示未提供内容提示。

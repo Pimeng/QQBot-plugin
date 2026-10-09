@@ -7,6 +7,8 @@ import path from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
 import { createContext, SourceTextModule, SyntheticModule } from "node:vm"
 import test from "node:test"
+import { createRequire } from "node:module"
+import { randomBytes } from "node:crypto"
 import lodash from "lodash"
 import YAML from "yaml"
 
@@ -113,9 +115,54 @@ async function fixture(t, initial = {}) {
     watchChange.flush()
   }
   return { ...common, ...cfg, warnings, listenPorts, files, changeFile, load,
+    setBot: bot => { context.Bot = bot },
     connections: () => connections,
   }
 }
+
+test("QQBot 消息通过真实 ICQQ TripTrap 投递，缺少 listenerCount 不再绕过面板", async t => {
+  const f = await fixture(t, null)
+  const hostRequire = createRequire(new URL("../../../package.json", import.meta.url))
+  const require = createRequire(hostRequire.resolve("icqq"))
+  const { Trapper } = require("triptrap")
+  const bot = new Trapper(), captured = []
+  bot.on = bot.trap.bind(bot)
+  bot.emit = bot.trip.bind(bot)
+  assert.equal(typeof bot.listenerCount, "undefined")
+  bot.on("message", event => captured.push(event))
+  bot.on("message.group", event => captured.push(event))
+  f.setBot(bot)
+  f.bindAdapter({ id: "QQBot", sep: ":", pickGroup: () => ({}), pickMember: () => ({}) })
+  await f.dispatch("message.group", { self_id: "10001", post_type: "message", message_type: "group", group_id: "10001:GROUP", sender: { user_id: "10001:USER", permissions: ["owner"] }, message_id: "mock-received", message: [{ type: "text", text: "mock" }], raw_message: "mock" })
+  assert.equal(captured.length, 2)
+  assert.equal(captured[0], captured[1])
+  assert.equal(captured[0].group_id, "GROUP")
+  assert.deepEqual([...captured[0].sender.permissions], ["owner"])
+})
+
+test("真实 SDK 引用事件 103 保留引用摘要，正文与引用分开，不虚构 msg_idx 映射", async t => {
+  const f = await fixture(t, null)
+  const sdkModule = (await f.load("adapter/sdk.js")).namespace
+  const sdk = sdkModule.createBot({ appid: "10000", secret: randomBytes(24).toString("hex"), intents: [] })
+  const base = { id: "incoming-quote", group_openid: "GROUP", content: "回复正文", author: { id: "USER", member_openid: "USER", username: "Member" }, timestamp: new Date().toISOString(), message_type: 103, msg_elements: [{ content: "被引用的原文", message_type: 0, msg_idx: "different-index" }] }
+  const event = sdk.processPayload("event", "message.group", { ...base })
+  assert.equal(event.message_type, "group")
+  assert.equal(event._qqbotMessageType, 103)
+  sdkModule.normalizeEvent(event)
+  assert.equal(event.source.raw_message, "被引用的原文")
+  assert.equal(event.source.message_id, "")
+  assert.equal(event.message[0].type, "reply")
+  assert.equal(event.message[1].text, "回复正文")
+  sdkModule.normalizeEvent(event)
+  assert.equal(event.message.filter(segment => segment.type === "reply").length, 1)
+  const bare = sdkModule.normalizeEvent(sdk.processPayload("event", "message.group", { ...base, id: "bare", content: "" }))
+  assert.equal(bare.message.length, 1)
+  assert.equal(bare.message[0].type, "reply")
+  const media = sdkModule.normalizeEvent(sdk.processPayload("event", "message.group", { ...base, content: "", msg_elements: [{ attachments: [{ content_type: "image/png" }] }] }))
+  assert.equal(media.source.raw_message, "[图片]")
+  const ordinary = sdkModule.normalizeEvent(sdk.processPayload("event", "message.group", { ...base, message_type: 0 }))
+  assert.equal(ordinary.source, undefined)
+})
 
 test("首次没有用户配置时生成默认配置，不启动 HTTP", async t => {
   const f = await fixture(t, null)
