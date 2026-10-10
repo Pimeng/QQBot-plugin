@@ -1,6 +1,13 @@
 import { dispatch, getMap, log } from "../lib/utils/common.js"
 import BotApi from "./bot-api.js"
 
+function isAtBot(event) {
+  return (
+    event.mentions?.some(m => m.is_you === true) === true ||
+    event._eventName === "message.group.at"
+  )
+}
+
 export default class AdapterEvents extends BotApi {
   async makeFriendMessage(data, event) {
     const user_id = `${data.self_id}${this.sep}${event.sender.user_id}`
@@ -163,7 +170,7 @@ export default class AdapterEvents extends BotApi {
       message: event.message,
       raw_message: event.raw_message,
       /** 是否群里 @ 了机器人（1.3.0 用事件名区分，message_type 都是 group） */
-      _at: event._eventName === "message.group.at",
+      _at: isAtBot(event),
     }
 
     for (const i of data.message)
