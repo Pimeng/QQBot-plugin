@@ -18,6 +18,7 @@ const account = { uin: "10001", appid: "20001", secret: "test-secret", webhook: 
 /** 读取真实插件源码，隔离宿主、配置文件和 SDK；HTTP 使用真实的临时本机端口。 */
 async function fixture(t, initial = {}) {
   const warnings = []
+  const debugLogs = []
   const listenPorts = []
   const files = new Map()
   const cfgFile = "./plugins/QQBot-Plugin/config/config/cfg.yaml"
@@ -32,7 +33,7 @@ async function fixture(t, initial = {}) {
     Bot: {}, plugin: class {},
     logger: {
       warn: (...args) => warnings.push(args.join(" ")),
-      info() {}, mark() {}, error() {}, debug() {}, blue: value => value,
+      info() {}, mark() {}, error() {}, debug: (...args) => debugLogs.push(args.join(" ")), blue: value => value,
     },
   })
   const cache = new Map()
@@ -114,11 +115,24 @@ async function fixture(t, initial = {}) {
     watchChange()
     watchChange.flush()
   }
-  return { ...common, ...cfg, warnings, listenPorts, files, changeFile, load,
+  return { ...common, ...cfg, warnings, debugLogs, listenPorts, files, changeFile, load,
     setBot: bot => { context.Bot = bot },
     connections: () => connections,
   }
 }
+
+test("gateway event debug logs preserve the complete packet", async t => {
+  const f = await fixture(t, null)
+  const packet = {
+    t: "UNKNOWN_EVENT",
+    d: { nested: { value: "x".repeat(1200) }, entries: Array.from({ length: 60 }, (_, i) => i) },
+  }
+  f.logEventPacket(packet.t, packet, "10001")
+  assert.equal(f.debugLogs.length, 1)
+  assert.ok(f.debugLogs[0].includes("收到事件包 [UNKNOWN_EVENT]"))
+  assert.ok(f.debugLogs[0].includes("x".repeat(1200)))
+  assert.ok(f.debugLogs[0].includes("59"))
+})
 
 test("QQBot 消息通过真实 ICQQ TripTrap 投递，缺少 listenerCount 不再绕过面板", async t => {
   const f = await fixture(t, null)

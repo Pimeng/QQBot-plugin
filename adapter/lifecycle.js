@@ -11,6 +11,7 @@ import {
   GROUP_INTENTS,
   GUILD_MESSAGE_INTENTS,
   log,
+  logEventPacket,
   markAdapterId,
   OPTIONAL_INTENTS,
   sleep,
@@ -184,6 +185,20 @@ export default class AdapterLifecycle {
       Bot[id].sdk.logger[level] = (...args) => {
         const head = String(args[0] ?? "")
         if (head.startsWith("recv from")) return
+        if (
+          level === "debug" &&
+          !account.webhook &&
+          head.startsWith("[WebSocketReceiver] 收到消息: ")
+        )
+          return logEventPacket("WebSocket", head.slice("[WebSocketReceiver] 收到消息: ".length), id)
+        if (
+          level === "debug" &&
+          args[1] &&
+          typeof args[1] === "object" &&
+          args[1].t === args[0] &&
+          "d" in args[1]
+        )
+          return account.webhook ? logEventPacket(args[0], args[1], id) : undefined
         if (level !== "error" && level !== "fatal" && silentSdkLogs.some(p => head.includes(p))) return
         return log(level, args, id)
       }

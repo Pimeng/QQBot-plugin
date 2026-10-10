@@ -18,6 +18,8 @@
 
 适配器通过 Yunzai 的全局 `Bot`、`logger`、`segment` 等运行环境工作。收到的消息会构造成 Yunzai 事件并通过 `Bot.emit("message", event)` 投递；监听器检测同时兼容 Node EventEmitter 的 listenerCount 与 ICQQ TripTrap 的 listeners，不要求存在 listenerCount。若没有消息事件监听器，则直接交给插件加载器处理。事件标记 `adapter = "QQBot"`，消息 ID 会去除平台实例前缀。
 
+SDK 收到网关包时会以 `debug` 级别输出完整数据：WebSocket 记录收到的原始帧，WebHook 记录进入 SDK 的事件包；不识别的事件类型也会记录。
+
 ## 账号与配置
 
 推荐在 `config/config/cfg.yaml` 使用对象列表管理账号：
