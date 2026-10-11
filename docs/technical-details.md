@@ -93,6 +93,14 @@ url: "https://bot.example.com"
 | `true` | 始终发送主动消息，不附带引用 |
 | `false` | 始终按引用回复，失败时不切换 |
 
+需要对单个群覆盖全局策略时，可设置 `activeMsgGroups`，键为机器人 QQ 号与群 OpenID，用冒号连接；`true` 强制主动发送，`false` 强制被动回复。未列出的群仍使用 `activeMsg`：
+
+```yaml
+activeMsgGroups:
+  "4018856587:群OpenID": true
+  "4018856587:另一个群OpenID": false
+```
+
 `40034105` 表示主动消息权限或配额不足。主动发送失败时，检查机器人权限，并优先使用事件回复。
 
 ### 发送模式与 Markdown

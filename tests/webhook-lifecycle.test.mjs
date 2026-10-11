@@ -311,6 +311,37 @@ test("仅修改实时发送设置时无需重启，部分保存保留原引用�
   assert.equal(f.config.activeMsg, true)
 })
 
+test("面板保存群聊回复策略映射并允许后续部分保存", async t => {
+  const f = await fixture(t, {})
+  const mapping = { "10001:GROUP_OPENID": "true", "10001:OTHER_GROUP": "false" }
+  await panelSave(f, { activeMsgGroups: mapping })
+  assert.deepEqual({ ...f.config.activeMsgGroups }, {
+    "10001:GROUP_OPENID": true,
+    "10001:OTHER_GROUP": false,
+  })
+  await panelSave(f, { sendMode: { default: "text" } })
+  assert.deepEqual({ ...f.config.activeMsgGroups }, {
+    "10001:GROUP_OPENID": true,
+    "10001:OTHER_GROUP": false,
+  })
+})
+
+test("群聊回复策略按机器人QQ号和群OpenID覆盖全局策略", async t => {
+  const f = await fixture(t, {
+    activeMsg: true,
+    activeMsgGroups: { "10001:GROUP_OPENID": true, "10001:PASSIVE_GROUP": false },
+  })
+  const MessageSender = (await f.load("adapter/message/sender.js")).namespace.default
+  const sender = Object.create(MessageSender.prototype)
+  sender.sep = ""
+  sender.noReply = { "10001": Date.now() + 60_000 }
+  const event = { self_id: "10001", message_type: "group", message_id: "message" }
+  assert.equal(sender.useReply({ ...event, group_id: "GROUP_OPENID" }), false)
+  assert.equal(sender.useReply({ ...event, group_id: `10001${sender.sep}PASSIVE_GROUP` }), true)
+  assert.equal(sender.useReply({ ...event, group_id: "OTHER_GROUP" }), false)
+  assert.equal(sender.useReply({ ...event, self_id: "20002", group_id: "GROUP_OPENID" }), false)
+})
+
 for (const [field, value, label] of [
   ["intents", ["INTERACTION"], "Intents"],
   ["bot.timeout", 60000, "Bot 连接参数"],

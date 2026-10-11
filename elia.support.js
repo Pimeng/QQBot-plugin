@@ -79,6 +79,25 @@ function parseSendModes(value) {
   return result
 }
 
+function parseActiveMsgGroups(value) {
+  const groups = typeof value === "string" ? parseYaml(value, "群聊回复策略", {}) : value
+  if (!groups || typeof groups !== "object" || Array.isArray(groups))
+    throw new Error("群聊回复策略必须是 YAML 键值对象")
+
+  const result = {}
+  for (const [key, mode] of Object.entries(groups)) {
+    const group = key.trim()
+    if (!/^[^:\s]+:[^:\s]+$/.test(group))
+      throw new Error(`群聊回复策略键 ${group || "(空)"} 必须是“机器人QQ号:群OpenID”`)
+    if (Object.hasOwn(result, group))
+      throw new Error(`群聊回复策略 ${group} 重复`)
+    if (mode !== true && mode !== false && mode !== "true" && mode !== "false")
+      throw new Error(`群聊回复策略 ${group} 只能是 true（主动发送）或 false（被动回复）`)
+    result[group] = mode === true || mode === "true"
+  }
+  return result
+}
+
 function parseAccounts(value) {
   const entries = Array.isArray(value) ? value : parseYaml(value, "账号配置", [])
   if (!Array.isArray(entries)) throw new Error("账号配置必须是 YAML 列表")
@@ -184,6 +203,12 @@ function readSettings() {
     escapeMarkdown: config.escapeMarkdown !== false,
     imageLength: Number(config.imageLength ?? 3),
     activeMsg: config.activeMsg === true ? "true" : config.activeMsg === false ? "false" : "auto",
+    activeMsgGroups: Object.fromEntries(
+      Object.entries(readObject(config.activeMsgGroups, {})).map(([key, value]) => [
+        key,
+        value === true ? "true" : value === false ? "false" : value,
+      ]),
+    ),
     sendMode: { ...readObject(config.sendMode, { default: "auto" }) },
     markdown: { template: String(markdown.template ?? "") },
   }
@@ -336,6 +361,25 @@ export function supportPanel() {
           },
         },
         {
+          field: "activeMsgGroups",
+          label: "群聊回复策略映射",
+          bottomHelpMessage: "键填写“机器人QQ号:群OpenID”；true 强制主动发送，false 强制被动回复，未配置时沿用全局策略。",
+          component: "KeyValue",
+          componentProps: {
+            keyLabel: "机器人QQ号:群OpenID",
+            keyPlaceholder: "4018856587:群OpenID",
+            valueLabel: "回复策略",
+            defaultValue: "false",
+            valueComponent: "Select",
+            valueProps: {
+              options: [
+                { label: "强制主动发送", value: "true" },
+                { label: "强制被动回复", value: "false" },
+              ],
+            },
+          },
+        },
+        {
           field: "sendMode",
           label: "发送模式映射",
           bottomHelpMessage: "按 default 或机器人标识配置，值为 auto、markdown 或 text。",
@@ -381,6 +425,9 @@ export function supportPanel() {
           const activeMsg = textValue(fieldValue(data, "activeMsg") ?? before.activeMsg, "引用回复策略")
           if (!ACTIVE_MESSAGE_MODES.has(activeMsg))
             throw new Error("引用回复策略只能是 auto、true 或 false")
+          const activeMsgGroups = parseActiveMsgGroups(
+            fieldValue(data, "activeMsgGroups") ?? config.activeMsgGroups ?? {},
+          )
 
           const webhookPort = numberValue(fieldValue(data, "webhookPort") ?? config.webhookPort ?? 0, "WebHook 端口", {
             integer: true,
@@ -454,6 +501,7 @@ export function supportPanel() {
             ),
             imageLength,
             activeMsg: activeMsg === "auto" ? "auto" : activeMsg === "true",
+            activeMsgGroups,
             sendMode,
             markdown: { ...markdownConfig, template: markdownTemplate },
             intents: parseLineList(fieldValue(data, "intents") ?? config.intents ?? [], "Intents"),

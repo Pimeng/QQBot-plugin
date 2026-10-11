@@ -45,6 +45,9 @@ master: []
 #   true  始终作为主动消息发送（不加引用）
 #   false 始终按被动回复发（失败就失败）
 activeMsg: auto
+# 单独指定群聊的回复方式，键为“机器人QQ号:群OpenID”，true 主动发送，false 被动回复
+# 未配置的群沿用上面的 activeMsg；群 OpenID 可从收到的群消息日志或事件中获取
+activeMsgGroups: {}
 # 是否转义 markdown 语法字符（颜文字被误解析时保持 true；需要原始 markdown 时设为 false）
 escapeMarkdown: true
 # WebHook 监听端口，0 表示不启用；仅启动时存在 WebHook 账号才监听，后续添加需重启；公网需自行反代到 /QQBot

@@ -18,12 +18,27 @@ import {
 import MessageTransport from "./transport.js"
 
 export default class MessageSender extends MessageTransport {
+  activeMsgMode(data) {
+    if (data?.message_type !== "group" || data.sub_type === "callback" || !data.group_id)
+      return config.activeMsg
+
+    const prefix = `${data.self_id}${this.sep}`
+    const groupId = String(data.group_id).startsWith(prefix)
+      ? String(data.group_id).slice(prefix.length)
+      : String(data.group_id)
+    const mode = config.activeMsgGroups?.[`${data.self_id}:${groupId}`]
+    if (mode === true || mode === "true") return true
+    if (mode === false || mode === "false") return false
+    return config.activeMsg
+  }
+
   useReply(data) {
     if (data.active) return false
     if (!data.message_id) return false
     if (data.sub_type === "callback") return true
-    if (config.activeMsg === true) return false
-    if (this.replyBlocked(data.self_id)) return false
+    const mode = this.activeMsgMode(data)
+    if (mode === true) return false
+    if (mode !== false && this.replyBlocked(data.self_id)) return false
     return true
   }
 
@@ -38,7 +53,7 @@ export default class MessageSender extends MessageTransport {
 
   /** 被动回复被 QQ 拒绝：短时间内改用主动消息，5 分钟后自动恢复引用回复 */
   markNoReply(id, reason) {
-    if (config.activeMsg === false) return
+    if (this.activeMsgMode({ self_id: id }) === false) return
     if (!this.noReply) this.noReply = {}
     if (this.replyBlocked(id)) return
     this.noReply[id] = Date.now() + 5 * 60 * 1000
@@ -173,7 +188,7 @@ export default class MessageSender extends MessageTransport {
         }
       }
       /** 被动回复被拒 → 去掉引用改用主动消息重发；成功即说明本账号有主动推送权限 */
-      if (data.sub_type !== "callback" && passiveLimited && config.activeMsg !== false) {
+      if (data.sub_type !== "callback" && passiveLimited && this.activeMsgMode(data) !== false) {
         const blocked = this.replyBlocked(data.self_id)
         this.markNoReply(data.self_id, "被动回复超出时间/次数限制（40034128）")
         if (!blocked) {
@@ -345,7 +360,7 @@ export default class MessageSender extends MessageTransport {
         msgs = await this.makeGuildMsg(data, toPlainMsg(msg))
         if (await sendAll()) return rets
       }
-      if (passiveLimited && config.activeMsg !== false) {
+      if (passiveLimited && this.activeMsgMode(data) !== false) {
         const blocked = this.replyBlocked(data.self_id)
         this.markNoReply(data.self_id, "频道被动回复超出时间/次数限制")
         if (!blocked) {
