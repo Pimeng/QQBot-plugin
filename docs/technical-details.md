@@ -77,7 +77,7 @@ url: "https://bot.example.com"
 
 在 QQ 开放平台将回调地址设置为 `https://bot.example.com/QQBot`，并将公网 HTTPS 请求反向代理到插件监听端口。端口为 `0` 时 WebHook 服务不会启动。内置文件路由使用 `/QQBot/File/<name>`，因此公网直链同样依赖有效的反向代理。
 
-内置 HTTP 服务仅在插件初始化时存在有效 WebHook 账号且端口大于 `0` 时启动；无账号或仅有 WebSocket 账号时，即使已填写端口和公网地址也不监听。运行中通过配置文件、管理指令或面板新增 WebHook 账号，若 HTTP 服务未启动，会提示重启 Yunzai 后才能接入。路由注册和本地图片直链不会临时启动服务；服务未运行时本地图片回退为普通图片消息。
+内置 HTTP 服务仅在插件初始化时存在有效 WebHook 账号且端口大于 `0` 时启动；无账号或仅有 WebSocket 账号时，即使已填写端口和公网地址也不监听。运行中通过配置文件、管理指令或面板新增 WebHook 账号，若 HTTP 服务未启动，会提示重启 Yunzai 后才能接入。路由注册和本地图片直链不会临时启动服务。媒体与 `fileToUrl` 始终优先官方上传，不依赖 HTTP 服务；仅官方不可用且需要本地直链回退时，检查公网地址及监听状态并输出警告。
 
 ## 消息发送
 
@@ -123,9 +123,15 @@ sendMode:
 
 ### 图片与其他媒体
 
-群聊和 C2C 私聊的普通消息可通过官方富媒体接口上传本地图片、音频、视频和文件，不要求配置公网地址；文件以原生文件卡片发送。适配器会补充 Yunzai 当前没有的 `segment.file(file, name)` 构造器，也可直接传 `{ type: "file", file, name }`；QQ 群和好友私聊事件中的 `e.group.sendFile(file, name)` / `e.friend.sendFile(file, name)` 会引用当前事件被动发送文件，直接通过 `Bot.pickGroup()` / `Bot.pickFriend()` 获取的对象则按主动消息发送。收到的文件附件会归一为标准 `file` 段。频道不支持原生文件消息。Markdown 内嵌图片需要 QQ 服务端可访问的公网 URL；已有公网图片 URL 可直接使用，依赖内置文件服务生成本地图片直链时，则需要配置 `url`、`webhookPort` 和有效 WebHook 账号，重启后确保服务运行，并正确设置反向代理。`imageLength` 是图片压缩阈值；未安装 `sharp` 时压缩会自动关闭。
+群聊和 C2C 私聊的普通消息可通过官方富媒体接口上传本地图片、音频、视频和文件，不要求配置公网地址；文件以原生文件卡片发送。适配器会补充 Yunzai 当前没有的 `segment.file(file, name)` 构造器，也可直接传 `{ type: "file", file, name }`；QQ 群和好友私聊事件中的 `e.group.sendFile(file, name)` / `e.friend.sendFile(file, name)` 会引用当前事件被动发送文件，直接通过 `Bot.pickGroup()` / `Bot.pickFriend()` 获取的对象则按主动消息发送。收到的文件附件会归一为标准 `file` 段。频道不支持原生文件消息。Markdown 内嵌图片与 `fileToUrl` 优先通过官方分片合并取得 `raw_url`，无需公网端口。公网源文件也先尝试官方直链，不可用时才返回原 URL。官方不可用且需要内置文件服务时，须配置 `url`、`webhookPort` 和有效 WebHook 账号，重启后确保服务运行并正确反向代理。`imageLength` 是图片压缩阈值；未安装 `sharp` 时压缩会自动关闭。
 
-带图片的普通消息会尽量将文字与首张媒体合并发送；如果内容包含无法合并的段或平台拒绝 caption，则会拆分发送。Markdown 图片使用公网文件直链。没有公网地址时，适配器会改用普通媒体消息，而不会把 base64 或空值拼成 Markdown 链接。
+带图片的普通消息会尽量将文字与首张媒体合并发送；如果内容包含无法合并的段或平台拒绝 caption，则会拆分发送。所有媒体优先官方接口；平台 URL 转存失败时先在本机下载后按分片流程重传，仍失败时才尝试文件服务 URL 转存。需要文件服务但公网地址缺失或端口未监听时输出警告。Markdown 无可用直链时改用普通媒体消息，不会把 base64 或空值拼成链接。
+
+账号、`pickGroup()` 与 `pickFriend()` 对象暴露 `uploadImage(file, opts)`、`fileToUrl(file, opts)` 和 `filetoUrl` 别名，支持 Buffer、Uint8Array、ArrayBuffer、本地路径、`file://`、Base64、data URL 和 HTTP(S) URL。群/好友对象自动绑定当前目标；账号级调用可传 `targetType: "group" | "user"` 与 `targetId`，省略时选择已知群或 C2C 好友；没有目标时官方上传不可用，进入直链回退。频道 ID 不会作为群/C2C 上传目标。
+
+`uploadImage` 返回 `{ url, width, height, file_info, file_uuid, ttl, raw_url }`（回退结果只有 URL 和尺寸），无可用直链时抛出错误；`fileToUrl` 返回 URL 或空字符串。依据[官方富媒体文档](https://bot.q.qq.com/wiki/develop/api-v2/autogen/api/v2_users_user_openid_files.post.html)，`raw_url` 仅在图片、视频、语音的分片合并路径返回，普通文件类型不返回此字段。`file_info` 原样透传用于发送，不解析为 URL。
+
+上传缓存按 SDK 实例、目标、文件类型、文件名和内容隔离，并合并相同的并发上传；在 `ttl` 到期前失效，`ttl=0` 可长期复用，未知有效期不缓存。预上传提供全文件 MD5/SHA1 和前 10002432 字节的 `md5_10m`；分片默认 5MB，并发和重试参数遵循服务端 `upload_config`，PUT 超时至少 5 秒；兼容 0/1 起始分片序号。无分片的秒传响应使用 `upload_id` 直接合并。所有上传均 `srv_send_msg=false`。历史 `toBotUpload` 配置不再改变官方优先策略，面板已移除该开关。
 
 SDK 的媒体分片上传在平台分片序号从 1 开始时需要归一化偏移；该处理集中在 `adapter/sdk.js`。若媒体上传报 `850019`，可先确认 SDK 版本和该适配层是否加载。
 
@@ -156,6 +162,6 @@ SDK 的媒体分片上传在平台分片序号从 1 开始时需要归一化偏�
 - **`40034105`**：主动消息无权限或配额不足；在开放平台检查权限，或使用引用回复。
 - **Markdown 拒绝或客户端显示空白**：确认机器人 Markdown 能力及模板/内容合法性；必要时将 `sendMode` 调为 `text` 或 `auto`。
 - **收不到群或用户消息**：检查 Yunzai 的 `whiteGroup`、`whiteQQ` 白名单是否包含对应群号或用户标识。
-- **Markdown 本地图片直链不可见**：确认 `url` 是公网 HTTPS 地址、启动时已配置有效 WebHook 账号和 `webhookPort`，且反向代理可访问 `/QQBot/File/`；服务未启动时会回退为普通图片消息。
+- **Markdown 本地图片直链不可见**：先检查官方分片上传或 `raw_url` 错误。只有官方不可用时才需要核对回退服务的公网 `url`、WebHook 账号、`webhookPort` 和 `/QQBot/File/` 反向代理；端口未监听时会警告并尝试普通富媒体消息。
 
 QQBot 引用事件（类型 103）的原消息内容位于 msg_elements[0]。适配层保留该类型并转换为 reply 段与 source 摘要，正文独立展示；纯引用也显示引用卡片。msg_idx 与 OpenAPI 消息 ID 是不同标识，不凭文本相同猜测跳转对象；缺少可定位消息 ID 时显示摘要并禁用跳转。旧缓存中已经丢失的内容无法恢复，只显示未提供内容提示。

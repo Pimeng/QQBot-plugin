@@ -1,6 +1,20 @@
 import MessageSender from "./message/sender.js"
+import imageSize from "image-size"
+import { fileToUrl, fileToUrlInfo, toBuffer } from "../lib/utils/common.js"
 
 export default class BotApi extends MessageSender {
+  async uploadImage(id, file, opts = {}) {
+    const info = await fileToUrlInfo(file, { ...opts, bot: Bot[id], fileType: 1 })
+    if (!info.url) throw new Error("QQBot 官方图片直链不可用，且回退文件服务未配置公网地址或未监听端口")
+    let size = {}
+    try { size = imageSize(await toBuffer(file)) } catch {}
+    return { ...info, width: size.width, height: size.height }
+  }
+
+  fileToUrl(id, file, opts = {}) {
+    return fileToUrl(file, { ...opts, bot: Bot[id] })
+  }
+
   makeForwardMsg(nodes = []) {
     return { type: "node", data: (Array.isArray(nodes) ? nodes : [nodes]).filter(Boolean) }
   }
@@ -20,6 +34,9 @@ export default class BotApi extends MessageSender {
       sendMsg: msg => this.sendFriendMsg(i, msg, true),
       sendFile: (file, name) =>
         this.sendFriendMsg(i, { type: "file", file, ...(name ? { name } : {}) }, true),
+      uploadImage: (file, opts) => this.uploadImage(id, file, { ...opts, targetType: "user", targetId: i.user_id }),
+      fileToUrl: (file, opts) => this.fileToUrl(id, file, { ...opts, targetType: "user", targetId: i.user_id }),
+      filetoUrl: (file, opts) => this.fileToUrl(id, file, { ...opts, targetType: "user", targetId: i.user_id }),
       recallMsg: message_id => this.recallFriendMsg(i, message_id),
       makeForwardMsg: nodes => this.makeForwardMsg(nodes),
       getAvatarUrl: () => `https://q.qlogo.cn/qqapp/${i.bot.info.appid}/${i.user_id}/0`,
@@ -59,6 +76,9 @@ export default class BotApi extends MessageSender {
       sendMsg: msg => this.sendGroupMsg(i, msg, true),
       sendFile: (file, name) =>
         this.sendGroupMsg(i, { type: "file", file, ...(name ? { name } : {}) }, true),
+      uploadImage: (file, opts) => this.uploadImage(id, file, { ...opts, targetType: "group", targetId: i.group_id }),
+      fileToUrl: (file, opts) => this.fileToUrl(id, file, { ...opts, targetType: "group", targetId: i.group_id }),
+      filetoUrl: (file, opts) => this.fileToUrl(id, file, { ...opts, targetType: "group", targetId: i.group_id }),
       recallMsg: message_id => this.recallGroupMsg(i, message_id),
       makeForwardMsg: nodes => this.makeForwardMsg(nodes),
       pickMember: user_id => this.pickMember(id, group_id, user_id),

@@ -78,7 +78,21 @@ accounts:
 
 默认使用 WebSocket。使用 WebHook 时，在 `cfg.yaml` 中设置 `webhook: true`、`webhookPort` 和公网 `url`，并将 QQ 开放平台回调地址配置为 `https://你的域名/QQBot`。WebHook 需要公网 HTTPS 和正确的反向代理。
 
-仅在插件启动时存在有效 WebHook 账号且 `webhookPort` 大于 `0` 时启动内置 HTTP 服务。首次安装尚未配置账号、没有 WebHook 账号时均不监听端口；后续添加 WebHook 账号会提示需要重启 Yunzai 才能接入。HTTP 服务未启动时，本地 Markdown 图片会回退为普通图片消息。
+仅在插件启动时存在有效 WebHook 账号且 `webhookPort` 大于 `0` 时启动内置 HTTP 服务。首次安装尚未配置账号、没有 WebHook 账号时均不监听端口；后续添加 WebHook 账号会提示需要重启 Yunzai 才能接入。所有媒体消息与 `fileToUrl` 均优先使用官方上传，Markdown 图片使用分片合并返回的 `raw_url`，无需 WebHook 或公网端口。只有官方不可用时才回退到已有公网地址或内置文件服务；需要文件服务回退但未配置公网地址、端口未监听时会输出警告，Markdown 图片则尝试作为普通图片发送。
+
+账号、群和 C2C 好友对象均提供 `uploadImage(file)`、`fileToUrl(file)`（兼容 `filetoUrl`）接口：
+
+```js
+const group = Bot[e.self_id].pickGroup(e.group_id)
+const image = await group.uploadImage("./image.png") // { url, width, height, file_info, ttl, ... }
+const url = await group.fileToUrl("./image.png")
+// 直接调用账号接口时可显式指定上传目标；省略时使用该账号已知的群或 C2C 好友。
+const directUrl = await Bot[e.self_id].fileToUrl("./image.png", {
+  targetType: "group", targetId: e.group_id,
+})
+```
+
+上传仅获取凭据，不自动发送消息。上传结果按账号、目标和文件内容缓存；`ttl` 到期后重新上传，`ttl=0` 可长期复用。官方 `raw_url` 仅支持分片上传的图片、视频和语音，普通文件不提供官方下载直链，需内置文件服务回退。无可用直链时 `fileToUrl` 返回空字符串并警告；`uploadImage` 无可用直链时抛出明确错误。
 
 ## 文档
 

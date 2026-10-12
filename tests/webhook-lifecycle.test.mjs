@@ -1,6 +1,6 @@
 // node --experimental-vm-modules --test tests/webhook-lifecycle.test.mjs
 import assert from "node:assert/strict"
-import { readFile } from "node:fs/promises"
+import { readFile, rm } from "node:fs/promises"
 import http from "node:http"
 import { once } from "node:events"
 import path from "node:path"
@@ -29,7 +29,7 @@ async function fixture(t, initial = {}) {
   let watchChange
   let connections = 0
   const context = createContext({
-    Buffer, URL, setTimeout, clearTimeout, fetch, console,
+    Buffer, URL, AbortSignal, setTimeout, clearTimeout, fetch, console,
     Bot: {}, plugin: class {},
     logger: {
       warn: (...args) => warnings.push(args.join(" ")),
@@ -408,4 +408,148 @@ test("HTTP 运行中关闭端口提示端口变更和重启关闭服务", async 
   const message = await panelSave(f, { webhookPort: 0 })
   assert.match(message, /WebHook 端口变更需重启 Yunzai 生效/)
   assert.match(message, /当前 HTTP 服务仍在运行，重启 Yunzai 后将关闭/)
+})
+
+const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jC1sAAAAASUVORK5CYII=", "base64")
+function uploadBot(handler) {
+  const calls = []
+  const bot = { adapter: "QQBot", uin: "10001", fl: new Map([["USER", {}]]), gl: new Map([["GROUP", {}]]), gml: new Map(),
+    sdk: { fileProcessor: { async uploadForMessage(payload, options) {
+      calls.push({ payload, options })
+      return handler ? handler(payload, options) : { file_info: "uploaded", raw_url: "https://cos.example.com/image.png", ttl: 60 }
+    } } },
+  }
+  return { bot, calls }
+}
+
+test("未配置 HTTP 且旧上传开关关闭时仍优先官方直链，Base64/data URL/Uint8Array 共用缓存", async t => {
+  const f = await fixture(t, { toBotUpload: false, webhookPort: 0, url: "" })
+  const { bot, calls } = uploadBot()
+  f.setBot({ "10001": bot })
+  for (const file of [png, `base64://${png.toString("base64")}`, `data:image/png;base64,${png.toString("base64")}`, new Uint8Array(png)])
+    assert.equal(await f.fileToUrl(file), "https://cos.example.com/image.png")
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].options.sendMessage, false)
+  assert.equal(f.webhook.server, null)
+  assert.equal(f.warnings.length, 0)
+})
+
+test("群/C2C 上传接口返回尺寸与凭据，filetoUrl 兼容名称使用相同目标缓存", async t => {
+  const f = await fixture(t, {})
+  const { bot, calls } = uploadBot()
+  f.setBot({ "10001": bot })
+  const BotApi = (await f.load("adapter/bot-api.js")).namespace.default
+  const adapter = Object.create(BotApi.prototype)
+  adapter.sep = ""
+  for (const peer of [adapter.pickGroup("10001", "10001GROUP"), adapter.pickFriend("10001", "10001USER")]) {
+    const image = await peer.uploadImage(png)
+    assert.equal(image.width, 1)
+    assert.equal(image.height, 1)
+    assert.equal(image.file_info, "uploaded")
+    assert.equal(await peer.fileToUrl(png), image.url)
+    assert.equal(await peer.filetoUrl(png), image.url)
+  }
+  assert.equal(calls.length, 2)
+  assert.equal(calls[0].options.targetType, "group")
+  assert.equal(calls[0].options.targetId, "GROUP")
+  assert.equal(calls[1].options.targetType, "user")
+  assert.equal(calls[1].options.targetId, "USER")
+})
+
+test("Markdown 图片优先当前账号和当前 C2C 目标，普通图片复用同一上传凭据", async t => {
+  const f = await fixture(t, {})
+  const { bot, calls } = uploadBot()
+  f.setBot({ "10001": bot })
+  const MessageTransport = (await f.load("adapter/message/transport.js")).namespace.default
+  const media = Object.create(MessageTransport.prototype)
+  const data = { self_id: "10001", bot, user_id: "USER", _mediaTarget: { target_type: "user", target_id: "USER" } }
+  const image = await media.makeMarkdownImage(data, png)
+  assert.equal(image.inline, true)
+  assert.match(image.des, /#1px #1px/)
+  const info = await media.uploadFileInfo(data, { type: "image", file: png }, data._mediaTarget)
+  assert.equal(info.file_info, "uploaded")
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].options.targetType, "user")
+})
+
+for (const settings of [{ webhookPort: 0, url: "" }, { webhookPort: 8080, url: "https://bot.example.com" }])
+test(`官方不可用且端口 ${settings.webhookPort} 未监听时警告并回退普通图片`, async t => {
+  const f = await fixture(t, settings)
+  const { bot } = uploadBot(() => { throw new Error("模拟官方上传失败") })
+  f.setBot({ "10001": bot })
+  const MessageMedia = (await f.load("adapter/message/media.js")).namespace.default
+  const media = Object.create(MessageMedia.prototype)
+  const image = await media.makeMarkdownImage({ self_id: "10001", bot, group_id: "GROUP" }, png)
+  assert.equal(image.inline, false)
+  assert.equal(image.url, "()")
+  assert.ok(f.warnings.some(warning => /官方文件直链不可用/.test(warning) && /未监听端口/.test(warning)))
+  assert.equal(f.webhook.server, null)
+  assert.equal(f.listenPorts.length, 0)
+})
+
+test("官方未返回 raw_url 时可继续发送普通图片，fileToUrl 不伪造公网链接", async t => {
+  const f = await fixture(t, {})
+  const { bot } = uploadBot(() => ({ file_info: "normal-image", ttl: 60 }))
+  f.setBot({ "10001": bot })
+  assert.equal(await f.filetoUrl(png), "")
+  const info = await f.uploadBotFile(bot, png, { fileType: 1 })
+  assert.equal(info.file_info, "normal-image")
+})
+
+test("官方分片不可用时才使用运行中的文件服务，图片和文件均可走 URL 转存回退", async t => {
+  const f = await fixture(t, { accounts: [account], webhookPort: 8080, url: "https://bot.example.com" })
+  f.webhook.init()
+  await once(f.webhook.server, "listening")
+  t.after(async () => {
+    for (const file of f.webhook.files.values()) await rm(file, { force: true })
+  })
+  const { bot, calls } = uploadBot(payload => {
+    if (payload.file) throw new Error("模拟分片上传不可用")
+    assert.match(payload.url, /^https:\/\/bot\.example\.com\/QQBot\/File\//)
+    return { file_info: "url-fallback", ttl: 60 }
+  })
+  f.setBot({ "10001": bot })
+  for (const [fileType, name] of [[1, "image.png"], [4, "document.txt"]]) {
+    const info = await f.uploadBotFile(bot, png, { fileType, name })
+    assert.equal(info.file_info, "url-fallback")
+  }
+  assert.equal(calls.length, 4)
+  assert.ok(calls[0].payload.file.equals(png))
+  assert.equal(calls[1].payload.file_type, 1)
+  assert.equal(calls[3].payload.file_type, 4)
+  const localUrl = await f.fileToUrl(png)
+  assert.match(localUrl, /^https:\/\/bot\.example\.com\/QQBot\/File\//)
+  const name = decodeURIComponent(new URL(localUrl).pathname.split("/").pop())
+  const response = await fetch(`http://127.0.0.1:${f.webhook.server.address().port}/QQBot/File/${encodeURIComponent(name)}`)
+  assert.ok(Buffer.from(await response.arrayBuffer()).equals(png))
+})
+
+test("公网图片 fileToUrl 也先官方分片；URL 转存失败后本机下载重传", async t => {
+  const f = await fixture(t, {})
+  const server = http.createServer((_req, res) => res.end(png))
+  server.listen(0, "127.0.0.1")
+  await once(server, "listening")
+  t.after(() => new Promise(resolve => server.close(resolve)))
+  const url = `http://127.0.0.1:${server.address().port}/image.png`
+  const { bot, calls } = uploadBot(payload => {
+    if (payload.url) throw new Error("平台下载失败")
+    return { file_info: "chunked", raw_url: "https://cos.example.com/image", ttl: 60 }
+  })
+  f.setBot({ "10001": bot })
+  const info = await f.uploadBotFile(bot, url, { fileType: 1 })
+  assert.equal(info.file_info, "chunked")
+  assert.equal(calls[0].payload.url, url)
+  assert.ok(calls[1].payload.file.equals(png))
+  assert.equal(await f.fileToUrl(url), "https://cos.example.com/image")
+  assert.equal(calls.length, 2)
+})
+
+test("fileToUrl 自动识别视频和 Silk 语音，不以普通文件类型申请 raw_url", async t => {
+  const f = await fixture(t, {})
+  const { bot, calls } = uploadBot()
+  f.setBot({ "10001": bot })
+  await f.fileToUrl(Buffer.from("\u0000\u0000\u0000\u0018ftypisom"))
+  await f.fileToUrl(Buffer.from("\u0002#!SILK_V3audio"))
+  assert.equal(calls[0].payload.file_type, 2)
+  assert.equal(calls[1].payload.file_type, 3)
 })

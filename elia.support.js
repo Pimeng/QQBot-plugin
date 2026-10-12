@@ -320,7 +320,7 @@ export function supportPanel() {
         {
           field: "url",
           label: "公网基础地址",
-          bottomHelpMessage: "用于生成 QQ 可访问的媒体链接，例如 https://bot.example.com。",
+          bottomHelpMessage: "官方上传不可用时用于文件直链回退，例如 https://bot.example.com；需文件服务正在监听。",
           component: "Input",
           componentProps: { placeholder: "https://bot.example.com" },
         },
@@ -338,7 +338,6 @@ export function supportPanel() {
           component: "Input",
         },
         { field: "toCallback", label: "Markdown 链接转回调", component: "Switch" },
-        { field: "toBotUpload", label: "上传至 QQ 官方素材库", component: "Switch" },
         { field: "hideGuildRecall", label: "频道撤回对所有人隐藏", component: "Switch" },
         { field: "escapeMarkdown", label: "转义 Markdown 特殊字符", component: "Switch" },
         {

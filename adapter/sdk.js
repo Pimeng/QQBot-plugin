@@ -65,7 +65,7 @@ async function withRetry(task, timeoutMs, delayMs) {
   throw lastError
 }
 
-async function putChunk(url, chunk) {
+async function putChunk(url, chunk, timeoutMs) {
   const res = await fetch(url, {
     method: "PUT",
     headers: {
@@ -73,11 +73,13 @@ async function putChunk(url, chunk) {
       "Content-Length": String(chunk.length),
     },
     body: chunk,
+    signal: AbortSignal.timeout(timeoutMs),
   })
   if (!res.ok) throw new Error(`富媒体分片上传失败：HTTP ${res.status}`)
 }
 
 async function uploadByChunksFixed(buffer, options) {
+  if (!buffer?.length) throw new Error("缺少可上传的文件数据")
   options = this.withFileType(options)
   const fileName = options.fileName || DEFAULT_FILE_NAMES[options.fileType]
   const prepared = await this.prepareUpload(options.targetType, options.targetId, {
@@ -91,14 +93,21 @@ async function uploadByChunksFixed(buffer, options) {
 
   const parts = Array.isArray(prepared.parts) ? prepared.parts : []
   const indexes = parts.map(part => Number(part?.index)).filter(Number.isInteger)
-  if (!prepared.upload_id || !parts.length || indexes.length !== parts.length)
+  if (!prepared.upload_id || !Array.isArray(prepared.parts) || indexes.length !== parts.length)
     throw new Error("富媒体预上传响应缺少 upload_id 或 parts")
+  // 秒传时无需 PUT 分片，仍通过 files 合并取得 file_info/raw_url。
+  if (!parts.length) return this.completeUpload(options, prepared.upload_id, fileName)
+  const sortedIndexes = [...indexes].sort((a, b) => a - b)
+  if (![0, 1].includes(sortedIndexes[0]) || sortedIndexes.some((n, i) => n !== sortedIndexes[0] + i))
+    throw new Error("富媒体预上传返回了不连续或重复的分片序号")
 
   const indexBase = indexes.includes(0) ? 0 : Math.min(...indexes)
   const blockSize = toPositiveNumber(prepared.block_size, 5 * 1024 * 1024)
   const uploadConfig = prepared.upload_config || {}
   const timeoutMs = toPositiveNumber(uploadConfig.retry_timeout, 300) * 1000
   const delayMs = toPositiveNumber(uploadConfig.retry_delay, 1) * 1000
+  if (parts.length !== Math.ceil(buffer.length / blockSize))
+    throw new Error("富媒体预上传分片数量与文件大小不匹配")
 
   await runWithConcurrency(parts, toPositiveNumber(uploadConfig.concurrency, 1), async part => {
     if (!part?.presigned_url) throw new Error("富媒体预上传返回了无效分片")
@@ -112,7 +121,7 @@ async function uploadByChunksFixed(buffer, options) {
         `富媒体分片 ${partIndex} 超出文件范围（base=${indexBase}, size=${buffer.length}, block=${blockSize}）`,
       )
 
-    await withRetry(() => putChunk(part.presigned_url, chunk), timeoutMs, delayMs)
+    await withRetry(() => putChunk(part.presigned_url, chunk, Math.max(5000, Math.min(timeoutMs, 120000))), timeoutMs, delayMs)
     await withRetry(
       () =>
         this.finishUploadPart(options.targetType, options.targetId, {

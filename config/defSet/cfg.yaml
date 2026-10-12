@@ -10,7 +10,7 @@ permission: master
 toQRCode: true
 # 是否把 markdown 消息里的链接转成回调
 toCallback: true
-# 是否允许把图片先上传到 QQ 官方素材库再发送
+# 历史兼容项；媒体和 fileToUrl 现在始终优先官方上传，此开关不再控制上传优先级
 toBotUpload: true
 # 频道撤回消息时是否对所有人隐藏
 hideGuildRecall: false
@@ -52,7 +52,7 @@ activeMsgGroups: {}
 escapeMarkdown: true
 # WebHook 监听端口，0 表示不启用；仅启动时存在 WebHook 账号才监听，后续添加需重启；公网需自行反代到 /QQBot
 webhookPort: 0
-# 公网地址，用于把图片等文件转成可被 QQ 拉取的直链，如 https://bot.example.com
+# 公网地址，仅官方上传不可用时用于内置文件服务回退，如 https://bot.example.com
 url: ""
 # 账号列表：只填开放平台的 AppID / AppSecret 这两个值
 #   uin      机器人QQ号，账号标识；省略时用 appid 顶替

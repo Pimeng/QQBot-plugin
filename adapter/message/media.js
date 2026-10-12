@@ -13,7 +13,6 @@ import {
   log,
   markdownImage,
   protectText,
-  qqbotIds,
   restoreText,
   rm,
   sharp,
@@ -23,16 +22,6 @@ import AdapterLifecycle from "../lifecycle.js"
 
 export default class MessageMedia extends AdapterLifecycle {
   async makeRecord(file) {
-    if (config.toBotUpload)
-      for (const i of qqbotIds()) {
-        if (!Bot[i].uploadRecord) continue
-        try {
-          const url = await Bot[i].uploadRecord(file)
-          if (url) return url
-        } catch (err) {
-          log("error", ["Bot", i, "语音上传错误", file, err])
-        }
-      }
     const buffer = await toBuffer(file)
     if (!Buffer.isBuffer(buffer)) return file
     if (isSilk(buffer)) return buffer
@@ -73,23 +62,10 @@ export default class MessageMedia extends AdapterLifecycle {
       .replace(/<qqbot-/g, "<qqbot-​")
   }
 
-  async makeBotImage(file) {
-    if (config.toBotUpload)
-      for (const i of qqbotIds()) {
-        if (!Bot[i].uploadImage) continue
-        try {
-          const image = await Bot[i].uploadImage(file)
-          if (image.url) return image
-        } catch (err) {
-          log("error", ["Bot", i, "图片上传错误", file, err])
-        }
-      }
-  }
-
   async makeMarkdownImage(data, file, summary = "图片") {
     if (sharp) file = await this.compressImage(data, file)
     const buffer = await toBuffer(file)
-    const image = (await this.makeBotImage(buffer)) || { url: await fileToUrl(file) }
+    const image = { url: await fileToUrl(file, { ...data, type: "image" }) }
 
     if (!image.width || !image.height)
       try {

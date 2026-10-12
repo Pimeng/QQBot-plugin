@@ -168,6 +168,10 @@ export default class AdapterLifecycle {
       gl: await this.getGroupMap(id),
       gml: await this.getMemberMap(id),
 
+      uploadImage: (file, opts) => this.uploadImage(id, file, opts),
+      fileToUrl: (file, opts) => this.fileToUrl(id, file, opts),
+      filetoUrl: (file, opts) => this.fileToUrl(id, file, opts),
+
       callback: {},
     }
 

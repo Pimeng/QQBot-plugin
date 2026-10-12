@@ -1,5 +1,5 @@
 import { randomInt } from "node:crypto"
-import { isActiveMsgDenied, isPassiveReplyLimit, log } from "../../lib/utils/common.js"
+import { isActiveMsgDenied, isPassiveReplyLimit, log, uploadBotFile } from "../../lib/utils/common.js"
 import MarkdownBuilder from "../markdown.js"
 
 export default class MessageTransport extends MarkdownBuilder {
@@ -42,10 +42,9 @@ export default class MessageTransport extends MarkdownBuilder {
     else payload.file = file
 
     try {
-      const info = await data.bot.sdk.fileProcessor.uploadForMessage(
-        payload,
-        { targetType: target.target_type, targetId: target.target_id, sendMessage: false },
-      )
+      const info = await uploadBotFile(data.bot, payload.url || payload.file, {
+        fileType, fileName, targetType: target.target_type, targetId: target.target_id,
+      })
       log("debug", ["富媒体上传完成", target, info], data.self_id)
       return info
     } catch (err) {
