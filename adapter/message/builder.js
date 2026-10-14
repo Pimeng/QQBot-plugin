@@ -45,7 +45,7 @@ export default class MessageBuilder extends MessageMedia {
    */
   atDisplayName(data, atId, seg) {
     const inline = seg?.text || seg?.name || seg?.nickname
-    if (inline && String(inline).trim()) return String(inline).trim()
+    if (inline && String(inline).trim()) return String(inline).trim().replace(/^@/, "")
 
     const prefix = `${data?.self_id ?? ""}${this.sep}`
     const strip = value =>

@@ -16,6 +16,7 @@ import {
   toStr,
 } from "../../lib/utils/common.js"
 import MessageTransport from "./transport.js"
+import { sentResult } from "../compat.js"
 
 export default class MessageSender extends MessageTransport {
   activeMsgMode(data) {
@@ -159,15 +160,21 @@ export default class MessageSender extends MessageTransport {
     let markdownDenied = false
 
     const sendAll = async () => {
+      if (rets.partial) return false
       for (const i of msgs)
         try {
           log("debug", ["发送消息", i], data.self_id)
           const ret = await this.sendBatch(data, i, send)
           log("debug", ["发送消息返回", ret], data.self_id)
 
-          rets.data.push(ret)
-          if (ret.id) rets.message_id.push(ret.id)
+          rets.data.push(...[ret].flat(Infinity))
+          for (const item of [ret].flat(Infinity)) if (item?.id) rets.message_id.push(item.id)
         } catch (err) {
+          if (Array.isArray(err?.qqbotSent)) {
+            rets.data.push(...err.qqbotSent.flat(Infinity))
+            for (const item of err.qqbotSent.flat(Infinity)) if (item?.id) rets.message_id.push(item.id)
+          }
+          if (rets.data.length) rets.partial = true
           log("error", ["发送消息错误", i, err], data.self_id)
           rets.error.push(err)
           if (isPassiveReplyLimit(err)) passiveLimited = true
@@ -179,12 +186,16 @@ export default class MessageSender extends MessageTransport {
     }
 
     if ((await sendAll()) === false) {
+      if (rets.partial) {
+        if (Array.isArray(data._ret_id)) data._ret_id.push(...rets.message_id)
+        return sentResult(rets)
+      }
       /** markdown 被平台拒绝（无权限 / 参数错 / 审核）：剥成纯文本重发，重试 markdown 没有意义 */
       if (markdownDenied && msgs.some(i => Array.isArray(i) && i.some(s => s?.type === "markdown"))) {
         msgs = await this.buildPlainMsgs(data, msg)
         if (await sendAll()) {
           if (Array.isArray(data._ret_id)) data._ret_id.push(...rets.message_id)
-          return rets
+          return sentResult(rets)
         }
       }
       /** 被动回复被拒 → 去掉引用改用主动消息重发；成功即说明本账号有主动推送权限 */
@@ -195,7 +206,7 @@ export default class MessageSender extends MessageTransport {
           msgs = await this.buildMsgs(data, msg)
           if (await sendAll()) {
             if (Array.isArray(data._ret_id)) data._ret_id.push(...rets.message_id)
-            return rets
+            return sentResult(rets)
           }
         }
       }
@@ -204,19 +215,19 @@ export default class MessageSender extends MessageTransport {
         msgs = await this.buildMsgs(data, msg)
         if (await sendAll()) {
           if (Array.isArray(data._ret_id)) data._ret_id.push(...rets.message_id)
-          return rets
+          return sentResult(rets)
         }
       }
       if (msgs.some(i => i.some(s => s?.type === "file"))) {
         if (Array.isArray(data._ret_id)) data._ret_id.push(...rets.message_id)
-        return rets
+        return sentResult(rets)
       }
       msgs = await this.buildPlainMsgs(data, msg)
       await sendAll()
     }
 
     if (Array.isArray(data._ret_id)) data._ret_id.push(...rets.message_id)
-    return rets
+    return sentResult(rets)
   }
 
   /** active: true 表示主动推送（不带 msg_id），不属于回复；普通回复不要传 */
@@ -335,15 +346,21 @@ export default class MessageSender extends MessageTransport {
     let markdownDenied = false
 
     const sendAll = async () => {
+      if (rets.partial) return false
       for (const i of msgs)
         try {
           log("debug", ["发送消息", i], data.self_id)
           const ret = await this.sendBatch(data, i, send)
           log("debug", ["发送消息返回", ret], data.self_id)
 
-          rets.data.push(ret)
-          if (ret.id) rets.message_id.push(ret.id)
+          rets.data.push(...[ret].flat(Infinity))
+          for (const item of [ret].flat(Infinity)) if (item?.id) rets.message_id.push(item.id)
         } catch (err) {
+          if (Array.isArray(err?.qqbotSent)) {
+            rets.data.push(...err.qqbotSent.flat(Infinity))
+            for (const item of err.qqbotSent.flat(Infinity)) if (item?.id) rets.message_id.push(item.id)
+          }
+          if (rets.data.length) rets.partial = true
           log("error", ["发送消息错误", i, err], data.self_id)
           rets.error.push(err)
           if (isPassiveReplyLimit(err)) passiveLimited = true
@@ -355,28 +372,29 @@ export default class MessageSender extends MessageTransport {
     }
 
     if ((await sendAll()) === false) {
+      if (rets.partial) return sentResult(rets)
       /** markdown 被平台拒绝：剥成纯文本重发 */
       if (markdownDenied && msgs.some(i => Array.isArray(i) && i.some(s => s?.type === "markdown"))) {
         msgs = await this.makeGuildMsg(data, toPlainMsg(msg))
-        if (await sendAll()) return rets
+        if (await sendAll()) return sentResult(rets)
       }
       if (passiveLimited && this.activeMsgMode(data) !== false) {
         const blocked = this.replyBlocked(data.self_id)
         this.markNoReply(data.self_id, "频道被动回复超出时间/次数限制")
         if (!blocked) {
           msgs = await this.makeGuildMsg(data, msg)
-          if (await sendAll()) return rets
+          if (await sendAll()) return sentResult(rets)
         }
       }
       /** 反方向兜底：没有主动消息权限时改回带引用的被动回复再试一次 */
       if (activeDenied && !msgs.some(i => i.some(s => s?.type === "reply")) && this.useReply(data)) {
         msgs = await this.makeGuildMsg(data, msg)
-        if (await sendAll()) return rets
+        if (await sendAll()) return sentResult(rets)
       }
       msgs = await this.makeGuildMsg(data, toPlainMsg(msg))
       await sendAll()
     }
-    return rets
+    return sentResult(rets)
   }
 
   async sendDirectMsg(data, msg) {
@@ -405,7 +423,9 @@ export default class MessageSender extends MessageTransport {
   }
 
   async recallMsg(data, recall, message_id) {
-    if (!Array.isArray(message_id)) message_id = [message_id]
+    const supplied = message_id?.message_ids ?? message_id?.message_id ?? message_id
+    const multiple = Array.isArray(supplied)
+    message_id = multiple ? supplied : [supplied]
     const msgs = []
     for (const i of message_id)
       try {
@@ -414,7 +434,7 @@ export default class MessageSender extends MessageTransport {
         log("debug", ["撤回消息错误", i, err], data.self_id)
         msgs.push(false)
       }
-    return msgs
+    return multiple ? msgs : Boolean(msgs[0])
   }
 
   recallFriendMsg(data, message_id) {

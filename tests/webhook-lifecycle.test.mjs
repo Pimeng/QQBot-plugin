@@ -2,124 +2,17 @@
 import assert from "node:assert/strict"
 import { readFile, rm } from "node:fs/promises"
 import http from "node:http"
-import { once } from "node:events"
+import { EventEmitter, once } from "node:events"
 import path from "node:path"
-import { fileURLToPath, pathToFileURL } from "node:url"
-import { createContext, SourceTextModule, SyntheticModule } from "node:vm"
+import { fileURLToPath } from "node:url"
 import test from "node:test"
 import { createRequire } from "node:module"
 import { randomBytes } from "node:crypto"
-import lodash from "lodash"
-import YAML from "yaml"
+import { fixture, incomingFixture, incomingSelf, incomingUser, incomingGroup, incomingBase, mentionedUser } from "./helpers/qqbot-fixture.mjs"
 
 const root = fileURLToPath(new URL("../", import.meta.url))
 const account = { uin: "10001", appid: "20001", secret: "test-secret", webhook: true }
 
-/** 读取真实插件源码，隔离宿主、配置文件和 SDK；HTTP 使用真实的临时本机端口。 */
-async function fixture(t, initial = {}) {
-  const warnings = []
-  const debugLogs = []
-  const listenPorts = []
-  const files = new Map()
-  const cfgFile = "./plugins/QQBot-Plugin/config/config/cfg.yaml"
-  files.set("./plugins/QQBot-Plugin/config/defSet/cfg.yaml", YAML.stringify({
-    accounts: [], token: [], webhookPort: 0, url: "", imageLength: 0,
-  }))
-  if (initial !== null) files.set(cfgFile, YAML.stringify(initial))
-  let watchChange
-  let connections = 0
-  const context = createContext({
-    Buffer, URL, AbortSignal, setTimeout, clearTimeout, fetch, console,
-    Bot: {}, plugin: class {},
-    logger: {
-      warn: (...args) => warnings.push(args.join(" ")),
-      info() {}, mark() {}, error() {}, debug: (...args) => debugLogs.push(args.join(" ")), blue: value => value,
-    },
-  })
-  const cache = new Map()
-  const overrides = {
-    lodash: { default: {
-      ...lodash,
-      debounce(fn) {
-        let pending = false
-        const debounced = () => { pending = true }
-        debounced.flush = () => {
-          if (!pending) return
-          pending = false
-          return fn()
-        }
-        return debounced
-      },
-    } },
-    chokidar: { default: { watch: () => ({ on: (_event, handler) => { watchChange = handler } }) } },
-    "node:fs": {
-      ...await import("node:fs"),
-      default: {
-        mkdirSync() {}, existsSync: file => files.has(file),
-        readFileSync(file) {
-          if (!files.has(file)) throw new Error("ENOENT")
-          return files.get(file)
-        },
-        writeFileSync: (file, data) => files.set(file, data),
-        copyFileSync: (from, to) => files.set(to, files.get(from)),
-      },
-    },
-    "node:http": { default: {
-      createServer(handler) {
-        const server = http.createServer(handler)
-        const listen = server.listen
-        server.listen = (port, callback) => {
-          listenPorts.push(port)
-          return listen.call(server, 0, "127.0.0.1", callback)
-        }
-        t.after(() => new Promise(resolve => server.close(resolve)))
-        return server
-      },
-    } },
-    hostConfig: { default: {} },
-    hostUin: { orgUin: 0 },
-    sdk: {
-      createBot: () => { throw new Error("此用例不应创建 SDK") },
-      login() {}, logout() {}, normalizeEvent: event => event,
-    },
-    adapter: { qqbot: { connect: async () => { connections++; return true } } },
-  }
-  async function synthetic(key, values) {
-    if (!cache.has(key)) cache.set(key, new SyntheticModule(Object.keys(values), function () {
-      for (const [name, value] of Object.entries(values)) this.setExport(name, value)
-    }, { context, identifier: key }))
-    return cache.get(key)
-  }
-  async function load(relative) {
-    const identifier = pathToFileURL(path.resolve(root, relative)).href
-    if (!cache.has(identifier)) cache.set(identifier, new SourceTextModule(
-      await readFile(fileURLToPath(identifier), "utf8"), { context, identifier },
-    ))
-    const module = cache.get(identifier)
-    if (module.status === "unlinked") await module.link(async (specifier, parent) => {
-      if (specifier === "../../../../lib/config/config.js") return synthetic("hostConfig", overrides.hostConfig)
-      if (specifier === "../uin.js") return synthetic("hostUin", overrides.hostUin)
-      if (specifier === "./sdk.js") return synthetic("sdk", overrides.sdk)
-      if (specifier === "../adapter/index.js") return synthetic("adapter", overrides.adapter)
-      if (overrides[specifier]) return synthetic(specifier, overrides[specifier])
-      if (!specifier.startsWith(".")) return synthetic(specifier, await import(specifier))
-      return load(path.relative(root, fileURLToPath(new URL(specifier, parent.identifier))))
-    })
-    if (module.status === "linked") await module.evaluate()
-    return module
-  }
-  const common = (await load("lib/utils/common.js")).namespace
-  const cfg = (await load("lib/utils/cfg.js")).namespace
-  const changeFile = data => {
-    files.set(cfgFile, YAML.stringify(data))
-    watchChange()
-    watchChange.flush()
-  }
-  return { ...common, ...cfg, warnings, debugLogs, listenPorts, files, changeFile, load,
-    setBot: bot => { context.Bot = bot },
-    connections: () => connections,
-  }
-}
 
 test("gateway event debug logs preserve the complete packet", async t => {
   const f = await fixture(t, null)
@@ -176,6 +69,178 @@ test("真实 SDK 引用事件 103 保留引用摘要，正文与引用分开，�
   assert.equal(media.source.raw_message, "[图片]")
   const ordinary = sdkModule.normalizeEvent(sdk.processPayload("event", "message.group", { ...base, message_type: 0 }))
   assert.equal(ordinary.source, undefined)
+})
+
+
+for (const sep of [":", ""]) test(`群 @ 机器人空正文补齐 at 段，兼容 ${sep} 实例分隔符且不重复`, async t => {
+  const f = await incomingFixture(t, sep)
+  const e = await f.receive("GROUP_AT_MESSAGE_CREATE", { ...incomingBase, content: " " })
+  assert.deepEqual(e.message.map(item => item.type), ["at"])
+  assert.equal(e.message[0].qq, incomingSelf)
+  assert.equal(e.message[0].text, "@DemoBot")
+  assert.equal(e.atBot, true)
+  assert.equal(e.group_name, "Demo Group")
+  assert.equal(e.group.name, "Demo Group")
+  assert.equal(e.user_id, incomingUser)
+  assert.equal(e.sender.role, "owner")
+  assert.equal(e.member.is_owner, true)
+  assert.equal(e.message_type, "group")
+  assert.equal(e.sub_type, "normal")
+  assert.equal(e.message_format, "array")
+  assert.equal(e.time, Math.floor(Date.parse(incomingBase.timestamp) / 1000))
+  assert.equal(e.raw_message, "@DemoBot")
+  await f.adapter.makeMessage(incomingSelf, e.raw)
+  assert.equal(f.captured.at(-1).message.filter(item => item.type === "at").length, 1)
+})
+
+for (const content of [`<@${mentionedUser}> `, `<@!${mentionedUser}> `, `\\u003c@${mentionedUser}\\u003e `, `&lt;@${mentionedUser}&gt; `])
+  test(`群 @ 他人保留消息段、昵称与正文顺序：${content}`, async t => {
+    const f = await incomingFixture(t)
+    const e = await f.receive("GROUP_MESSAGE_CREATE", {
+      ...incomingBase, content: `前文${content}后文`,
+      mentions: [{ id: mentionedUser, member_openid: mentionedUser, username: "Bob", is_you: false, member_role: "admin" }],
+    })
+    assert.deepEqual(e.message.map(item => item.type), ["text", "at", "text"])
+    assert.equal(e.message[1].qq, mentionedUser)
+    assert.equal(e.message[1].text, "@Bob")
+    assert.equal(e.message[1].is_you, false)
+    assert.equal(e.atBot, undefined)
+    assert.equal(e.raw_message, "前文@Bob 后文")
+    assert.equal(f.adapter.atToText({ self_id: incomingSelf, bot: f.account }, e.message[1]), "@Bob")
+    assert.equal(e.sender.role, "owner")
+  })
+
+test("@ 缺少 mentions 不丢失 OpenID；全体 @ 保留 all；普通正文不凭 mentions 添加他人 @", async t => {
+  const f = await incomingFixture(t)
+  const e = await f.receive("GROUP_MESSAGE_CREATE", { ...incomingBase, content: `<@!${mentionedUser}> <@everyone> <@all>正文` })
+  assert.deepEqual(e.message.filter(item => item.type === "at").map(item => item.qq), [mentionedUser, "all", "all"])
+  assert.equal(e.atBot, undefined)
+  const plain = await f.receive("GROUP_MESSAGE_CREATE", { ...incomingBase, content: "正文", mentions: [{ id: mentionedUser }] })
+  assert.deepEqual(plain.message.map(item => item.type), ["text"])
+})
+
+for (const is_you of [true, "true"]) test(`显式 @ 机器人 is_you=${typeof is_you} 正确识别，多个 @ 不丢失`, async t => {
+  const f = await incomingFixture(t)
+  const e = await f.receive("GROUP_AT_MESSAGE_CREATE", {
+    ...incomingBase, content: `<@BOT_OPENID> <@${mentionedUser}> 指令`,
+    mentions: [{ id: "BOT_OPENID", username: "DemoBot", is_you }, { id: mentionedUser, username: "群员", is_you: false }],
+  })
+  assert.equal(e.message.filter(item => item.type === "at" && item.qq === incomingSelf).length, 1)
+  assert.equal(e.message.find(item => item.type === "at" && item.qq === mentionedUser).text, "@群员")
+  assert.equal(e.atBot, true)
+  assert.equal(e.raw_message, "@DemoBot @群员 指令")
+})
+
+for (const type of ["C2C_MESSAGE_CREATE", "GROUP_MESSAGE_CREATE"]) test(`${type} 文件可通过 e.file 和场景 getFileUrl 读取，名称/大小/URL 对齐`, async t => {
+  const f = await incomingFixture(t)
+  const url = "https://files.example.com/download?fname=sample.txt&key=mock"
+  const payload = {
+    ...incomingBase, attachments: [{ content_type: "file", filename: "sample.txt", size: 2048, url }],
+  }
+  if (type === "C2C_MESSAGE_CREATE") {
+    delete payload.group_id
+    delete payload.group_openid
+    payload.author = { id: incomingUser, user_openid: incomingUser, username: "" }
+    f.account.fl.set(`${incomingSelf}:${incomingUser}`, { nickname: "缓存昵称" })
+  }
+  const e = await f.receive(type, payload)
+  assert.equal(e.message.length, 1)
+  const file = e.message[0]
+  assert.equal(file.type, "file")
+  assert.equal(file.name, "sample.txt")
+  assert.equal(file.size, 2048)
+  assert.equal(file.file_size, 2048)
+  assert.equal(file.url, url)
+  assert.equal(file.file, url)
+  assert.equal(file.fid, url)
+  assert.equal(file.file_id, undefined)
+  assert.equal(e.file.name, "sample.txt")
+  assert.equal(e.raw_message, "[文件]")
+  const peer = e.group || e.friend
+  // 宿主 dealMsg 会只保留 name/fid，旧插件仍可取得下载地址。
+  e.file = { name: file.name, fid: file.fid }
+  assert.equal(await peer.getFileUrl(e.file.fid), url)
+  await assert.rejects(peer.getFileUrl("其他消息的文件"), /未提供/)
+  assert.equal(payload.attachments[0].filename, "sample.txt")
+  if (type === "C2C_MESSAGE_CREATE") {
+    assert.equal(e.message_type, "private")
+    assert.equal(e.sub_type, "friend")
+    assert.equal(e.target_id, incomingUser)
+    assert.equal(e.sender.nickname, "缓存昵称")
+    assert.equal(e.sender.role, undefined)
+  }
+})
+
+test("混合媒体按 image/record/video/file 分类，保留文件真实 ID、零大小，链接不误归类", async t => {
+  const f = await incomingFixture(t)
+  const e = await f.receive("GROUP_MESSAGE_CREATE", {
+    ...incomingBase, content: "正文<faceType=1,faceId=14>",
+    attachments: [
+      { content_type: "image/png", filename: "image.png", url: "//files.example.com/image.png", width: 123 },
+      { content_type: "audio/silk", filename: "audio.silk", url: "https://files.example.com/audio.silk" },
+      { content_type: "video/mp4", filename: "video.mp4", url: "https://files.example.com/video.mp4" },
+      { content_type: "application/octet-stream", filename: "empty.bin", size: "0", file_id: "REAL_FILE_ID", url: "https://files.example.com/empty.bin" },
+      { content_type: "text/plain", filename: "text.txt", url: "https://files.example.com/text.txt" },
+    ],
+  })
+  assert.deepEqual(e.message.map(item => item.type), ["text", "face", "image", "record", "video", "file", "file"])
+  assert.equal(e.message[2].url, "https://files.example.com/image.png")
+  assert.equal(e.message[2].width, 123)
+  assert.equal(e.message[5].fid, "REAL_FILE_ID")
+  assert.equal(e.message[5].file_size, 0)
+  assert.equal(await e.group.getFileUrl("REAL_FILE_ID"), "https://files.example.com/empty.bin")
+  assert.equal(e.raw_message, "正文[表情:14][图片][语音][视频][文件][文件]")
+  const other = f.sdkModule.normalizeEvent({ message: [{ type: "link", data: { url: "https://example.com" } }, { type: "json", data: "原始 JSON 内容" }] })
+  assert.equal(other.message[0].type, "link")
+  assert.equal(other.message[1].data, "原始 JSON 内容")
+})
+
+test("群名未下发时使用已有缓存或 OpenID，角色降为普通群员不会沿用 owner", async t => {
+  const f = await incomingFixture(t, ":", {})
+  const e = await f.receive("GROUP_MESSAGE_CREATE", { ...incomingBase, content: "正文" })
+  assert.equal(e.group_name, incomingGroup)
+  assert.equal(e.member.is_owner, true)
+  const member = await f.receive("GROUP_MESSAGE_CREATE", { ...incomingBase, content: "正文", group_name: "新群名", author: { ...incomingBase.author, member_role: "member" } })
+  assert.equal(member.group.name, "新群名")
+  assert.equal(member.sender.role, "member")
+  assert.equal(member.member.is_owner, false)
+  assert.equal(member.member.is_admin, false)
+  const unnamed = await f.receive("GROUP_MESSAGE_CREATE", { ...incomingBase, content: "正文", author: { ...incomingBase.author, username: "", member_role: "member" } })
+  assert.equal(unnamed.sender.nickname, "Alice")
+})
+
+test("缺少作者通用 id 仍保留 OpenID；@ 使用 member_openid；缺少附件 URL 不虚构链接", async t => {
+  const f = await incomingFixture(t)
+  const e = await f.receive("GROUP_MESSAGE_CREATE", {
+    ...incomingBase, content: "<@TARGET_ID>", author: { member_openid: incomingUser, member_role: "admin" },
+    mentions: [{ id: "TARGET_ID", member_openid: mentionedUser, username: "群员" }],
+    attachments: [{ content_type: "file", filename: "unavailable.bin", size: 0 }],
+  })
+  assert.equal(e.sender.user_id, incomingUser)
+  assert.equal(e.sender.role, "admin")
+  assert.equal(e.member.is_admin, true)
+  assert.equal(e.message[0].qq, mentionedUser)
+  assert.equal(e.message[0].id, mentionedUser)
+  assert.equal(e.file.name, "unavailable.bin")
+  assert.equal(e.file.url, undefined)
+  assert.equal(e.file.file, undefined)
+  await assert.rejects(e.group.getFileUrl(e.file.fid), /未提供/)
+})
+
+test("引用 103、机器人 @ 和文件混合时正文保持独立，重复规范化不增加消息段", async t => {
+  const f = await incomingFixture(t)
+  const e = await f.receive("GROUP_AT_MESSAGE_CREATE", {
+    ...incomingBase, content: "引用后的正文", message_type: 103,
+    msg_elements: [{ content: "原消息摘要", msg_idx: "independent-index" }],
+    attachments: [{ content_type: "file", filename: "quoted.txt", url: "https://files.example.com/quoted.txt" }],
+  })
+  assert.deepEqual(e.message.map(item => item.type), ["reply", "at", "text", "file"])
+  assert.equal(e.source.message_id, "")
+  assert.equal(e.source.raw_message, "原消息摘要")
+  assert.equal(e.message[2].text, "引用后的正文")
+  const normalized = f.sdkModule.normalizeEvent(e.raw)
+  await f.adapter.makeMessage(incomingSelf, normalized)
+  assert.deepEqual(f.captured.at(-1).message.map(item => item.type), ["reply", "at", "text", "file"])
 })
 
 test("首次没有用户配置时生成默认配置，不启动 HTTP", async t => {

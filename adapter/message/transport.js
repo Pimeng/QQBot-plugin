@@ -121,22 +121,32 @@ export default class MessageTransport extends MarkdownBuilder {
       rets.push(await this.sendFileInfoMessage(data, target, infos[i], reply, content))
     const strip = list => list.map(({ _atText, ...rest }) => rest)
 
-    let inline = !!caption
-    if (inline)
-      try {
-        await post(0, caption)
-      } catch (err) {
-        /** 回复超时/无主动权限这类错误交给 sendMsg 的降级逻辑处理，不要在这里吞掉 */
-        if (isPassiveReplyLimit(err) || isActiveMsgDenied(err)) throw err
-        inline = false
-        log("warn", ["图文合成一条发送失败，改为拆开发送", err], data.self_id)
+    try {
+      let inline = !!caption
+      if (inline) {
+        try {
+          await post(0, caption)
+        } catch (err) {
+          /** 回复超时/无主动权限这类错误交给 sendMsg 的降级逻辑处理，不要在这里吞掉 */
+          if (isPassiveReplyLimit(err) || isActiveMsgDenied(err)) throw err
+          inline = false
+          log("warn", ["图文合成一条发送失败，改为拆开发送", err], data.self_id)
+        }
       }
 
-    if (inline) {
-      for (let i = 1; i < infos.length; i++) await post(i, "")
-    } else {
-      for (let i = 0; i < infos.length; i++) await post(i, "")
-      if (contentSegs.length) rets.push(await send(strip(others)))
+      if (inline) {
+        for (let i = 1; i < infos.length; i++) await post(i, "")
+      } else {
+        for (let i = 0; i < infos.length; i++) await post(i, "")
+        if (contentSegs.length) rets.push(await send(strip(others)))
+      }
+    } catch (err) {
+      if (rets.length) {
+        const error = err instanceof Error ? err : new Error(String(err))
+        error.qqbotSent = rets
+        throw error
+      }
+      throw err
     }
     return rets.length === 1 ? rets[0] : rets
   }

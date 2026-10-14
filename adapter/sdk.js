@@ -13,6 +13,8 @@
  */
 
 import SDK from "qq-official-bot"
+import { normalizeReceivedSegment, prepareReceivedPayload, receivedMessageText } from "./message/received.js"
+import { unixTime } from "./compat.js"
 
 export const SDK_NAME = "qq-official-bot"
 export const SDK_VERSION = "1.3.0"
@@ -187,25 +189,6 @@ export function flattenReceivedMessage(msg) {
   })
 }
 
-function normalizeReceivedFiles(message) {
-  return message.map(item => {
-    if (!item || typeof item !== "object") return item
-    const isFile = item.type === "file"
-    if (!isFile && ["image", "video", "audio"].includes(item.type)) return item
-
-    const url = item.url ?? item.data?.url
-    if (!isFile && (typeof url !== "string" || !url)) return item
-
-    const name = item.name ?? item.filename ?? item.data?.name ?? item.data?.filename
-    return {
-      ...item,
-      type: "file",
-      file: item.file ?? url,
-      ...(name ? { name } : {}),
-    }
-  })
-}
-
 /**
  * 创建 SDK 实例
  *
@@ -224,14 +207,54 @@ export function createBot(opts = {}) {
     timeout: opts.timeout,
     maxRetry: opts.maxRetry,
     reconnectDelay: opts.retryDelay,
+    // SDK 默认删除 mentions 里的所有 @，包括 @ 他人；由适配器保留并规范消息段。
+    removeAt: false,
   }
   if (opts.sandbox) config.apiBaseUrl = SANDBOX_API_BASE
 
   const sdk = new Bot(config)
+  // 1.3.0 的这两个方法仍直接抛 UnsupportedMethodError。按上游 GroupService
+  // 的 /members 接口补齐，只在插件显式刷新时请求，不在每条入站消息上拉取。
+  const pendingMembers = new Map()
+  sdk.getGroupMemberInfo = async (groupId, userId) => {
+    const { data } = await sdk.request.get(`/v2/groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(userId)}`)
+    return data
+  }
+  sdk.getGroupMemberList = groupId => {
+    if (pendingMembers.has(groupId)) return pendingMembers.get(groupId)
+    const promise = (async () => {
+      const members = new Map(), cursors = new Set()
+      let cursor = ""
+      for (let pageNumber = 0; pageNumber < 1000; pageNumber++) {
+        const { data } = await sdk.request.get(`/v2/groups/${encodeURIComponent(groupId)}/members`, { params: { cursor } })
+        if (!Array.isArray(data?.members)) throw new Error("QQBot 群成员响应缺少 members 数组")
+        for (const member of data.members) if (member?.member_openid) members.set(member.member_openid, member)
+        const next = data.next_cursor || ""
+        if (!next) return [...members.values()]
+        if (typeof next !== "string" || cursors.has(next)) throw new Error("QQBot 群成员分页游标无效或重复")
+        cursors.add(next)
+        cursor = next
+      }
+      throw new Error("QQBot 群成员分页超出上限")
+    })()
+    pendingMembers.set(groupId, promise)
+    promise.then(() => pendingMembers.delete(groupId), () => pendingMembers.delete(groupId))
+    return promise
+  }
   const rawProcessPayload = sdk.processPayload.bind(sdk)
   sdk.processPayload = (id, name, payload) => {
     const type = payload?.message_type
-    const parsed = rawProcessPayload(id, name, payload)
+    const isMessage = ["message.group", "message.group.at", "message.private.friend", "message.private.direct", "message.guild"].includes(name)
+    const parsed = rawProcessPayload(id, name, isMessage ? prepareReceivedPayload(payload) : payload)
+    if (parsed) {
+      parsed._eventName = name
+      if (name.startsWith("notice")) {
+        parsed._qqbotTimestamp = payload?.timestamp
+        for (const key of ["username", "member_role", "guild_id", "channel_id"])
+          if (parsed[key] === undefined && payload?.[key] !== undefined) parsed[key] = payload[key]
+        if (typeof payload?.bot === "boolean") parsed.is_bot = payload.bot
+      }
+    }
     if (parsed && Number(type) === 103) parsed._qqbotMessageType = 103
     return parsed
   }
@@ -303,20 +326,24 @@ export function normalizeEvent(event) {
 
   if (event.group_id === undefined && event.group_openid !== undefined)
     event.group_id = event.group_openid
+  if (event.post_type === "notice") event.time = unixTime(event._qqbotTimestamp) ?? unixTime(event.time)
 
   const sender = event.sender
   if (sender && typeof sender === "object") {
     if (event.author?.member_role !== undefined && sender.member_role === undefined) sender.member_role = event.author.member_role
-    if (sender.nickname === undefined) sender.nickname = sender.user_name
-    if (sender.card === undefined) sender.card = sender.user_name
+    if (!sender.nickname) sender.nickname = sender.user_name || event.author?.username || sender.user_id
+    if (sender.card === undefined) sender.card = event.member?.nick || ""
+    const role = sender.member_role || sender.role || sender.permissions?.find(value => ["owner", "admin", "member"].includes(value))
+    if (["group", "guild"].includes(event.message_type))
+      sender.role = ["owner", "admin"].includes(role) ? role : "member"
   }
-  if (event.user_name === undefined && sender?.user_name !== undefined)
-    event.user_name = sender.user_name
+  if (!event.user_name && sender?.nickname) event.user_name = sender.nickname
 
   if (Array.isArray(event.message))
-    event.message = normalizeReceivedFiles(flattenReceivedMessage(event.message))
+    event.message = event.message.map(item => normalizeReceivedSegment(item, event.mentions))
 
   normalizeQuotedEvent(event)
+  if (Array.isArray(event.message)) event.raw_message = receivedMessageText(event.message)
 
   return event
 }

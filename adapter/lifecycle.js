@@ -162,6 +162,7 @@ export default class AdapterLifecycle {
 
       pickMember: (group_id, user_id) => this.pickMember(id, group_id, user_id),
       pickGroup: group_id => this.pickGroup(id, group_id),
+      ...this.accountMethods(id),
       getGroupMap() {
         return this.gl
       },
