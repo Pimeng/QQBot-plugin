@@ -1,4 +1,5 @@
 import crypto from "node:crypto"
+import { fileURLToPath } from "node:url"
 import YAML from "yaml"
 import { isDeepStrictEqual } from "node:util"
 import { config, configSave } from "./lib/utils/cfg.js"
@@ -263,7 +264,8 @@ export function supportPanel() {
       author: "Pimeng",
       link: "https://github.com/Pimeng/QQBot-plugin",
       icon: "mdi:robot-outline",
-      iconColor: "#27856b",
+      iconColor: "#0099FF",
+      iconPath: fileURLToPath(new URL("./resources/icon.png", import.meta.url)),
     },
     configInfo: {
       schemas: [
