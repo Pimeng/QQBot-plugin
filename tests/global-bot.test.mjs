@@ -39,14 +39,16 @@ async function fixture(online = false) {
   const logs = []
   const context = createContext({ Bot: host, Map, Set, WeakMap })
   const modules = new Map()
-  const common = new SyntheticModule(["log"], function () { this.setExport("log", (...args) => logs.push(args)) }, { context })
+  const logging = new SyntheticModule(["qblog"], function () {
+    this.setExport("qblog", { error: (...args) => logs.push(args) })
+  }, { context })
   const adapter = new SyntheticModule(["qqbot"], function () { this.setExport("qqbot", { sep: ":" }) }, { context })
   for (const name of ["uin", "bot"]) modules.set(name, new SourceTextModule(
     await readFile(new URL(`../lib/${name}.js`, import.meta.url), "utf8"),
     { context, identifier: name },
   ))
   await modules.get("bot").link(specifier => specifier === "./uin.js" ? modules.get("uin") :
-    specifier === "./utils/common.js" ? common : adapter)
+    specifier === "./utils/logger.js" ? logging : adapter)
   await modules.get("bot").evaluate()
   function account(id) {
     const calls = []

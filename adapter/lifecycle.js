@@ -2,23 +2,18 @@ import { config, CFG_FILE } from "../lib/utils/cfg.js"
 import { EventEmitter } from "node:events"
 import { contactMap } from "../lib/contact-map.js"
 import { getAccounts, normalizeAccount } from "../lib/utils/accounts.js"
+import { qblog } from "../lib/utils/logger.js"
+import { createSdkLogger } from "./sdk-logger.js"
 import {
   createBot,
   login as sdkLogin,
   logout as sdkLogout,
   normalizeEvent,
 } from "./sdk.js"
-import {
-  dispatch,
-  GROUP_INTENTS,
-  GUILD_MESSAGE_INTENTS,
-  log,
-  logEventPacket,
-  markAdapterId,
-  OPTIONAL_INTENTS,
-  sleep,
-  webhook,
-} from "../lib/utils/common.js"
+import { dispatch, markAdapterId } from "../lib/utils/events.js"
+import { GROUP_INTENTS, GUILD_MESSAGE_INTENTS, OPTIONAL_INTENTS } from "../lib/utils/message.js"
+import { sleep } from "../lib/utils/files.js"
+import { webhook } from "../lib/utils/webhook.js"
 
 /** 账号监听拿到与全局 Bot 相同的 Yunzai 事件，SDK 的原始事件保持在 sdk 上。 */
 export function accountEvents(bot) {
@@ -71,7 +66,7 @@ export default class AdapterLifecycle {
     const id = account.uin
     const restartNotice = webhook.restartNotice(account)
     if (restartNotice) {
-      log("warn", restartNotice, id)
+      qblog.warn(`[${id}] ${restartNotice}`)
       return false
     }
     delete this.activeIntents[id]
@@ -87,7 +82,7 @@ export default class AdapterLifecycle {
       try {
         ret = await this.connectOnce(id, account, list)
       } catch (err) {
-        log("error", ["QQBot 账号初始化失败", err], id)
+        qblog.error(`[${id}] 账号初始化失败`, err)
         return false
       }
       if (ret.ok) {
@@ -96,35 +91,27 @@ export default class AdapterLifecycle {
         if (Bot[id]) Bot[id].interaction = list.includes("INTERACTION")
         const dropped = wanted.filter(x => !list.includes(x))
         if (dropped.length)
-          log(
-            "warn",
-            [
-              `以下 intents 申请被平台拒绝，已自动降级连接：${dropped.join(" | ")}`,
-              dropped.includes("INTERACTION")
-                ? "没有 INTERACTION 就收不到按钮点击事件（INTERACTION_CREATE）：「回调按钮」可能无法使用。请到 QQ 开放平台为该机器人开启按钮交互能力。"
-                : "请在 QQ 开放平台确认该机器人已开启对应能力。",
-              `当前生效 intents：${list.join(" | ")}`,
-            ],
-            id,
+          qblog.warn(
+            `[${id}] 以下 intents 申请被平台拒绝，已自动降级连接：${dropped.join(" | ")}`,
+            dropped.includes("INTERACTION")
+              ? "没有 INTERACTION 就收不到按钮点击事件（INTERACTION_CREATE）：「回调按钮」可能无法使用。请到 QQ 开放平台为该机器人开启按钮交互能力。"
+              : "请在 QQ 开放平台确认该机器人已开启对应能力。",
+            `当前生效 intents：${list.join(" | ")}`,
           )
-        else if (i > 0) log("warn", [`已改用兜底 intents：${list.join(" | ")}`], id)
+        else if (i > 0) qblog.warn(`[${id}] 已改用兜底 intents：${list.join(" | ")}`)
         return true
       }
       if (!ret.intentError) return false
       lastError = ret.error
     }
 
-    log(
-      "error",
-      [
-        `intents 被拒绝（${lastError}），最后一次申请：${queue[queue.length - 1].list.join(" | ") || "（空）"}`,
-        "4013/4014 说明其中有 intent 未被该机器人授权：请到 QQ 开放平台确认已开启对应能力，" +
-          `或在 ${CFG_FILE} 的 intents 里只保留已授权的项。` +
-          "可用项：群消息 GROUP_AT_MESSAGE_CREATE、C2C_MESSAGE_CREATE；" +
-          "频道 GUILDS、GUILD_MESSAGES、PUBLIC_GUILD_MESSAGES、GUILD_MESSAGE_REACTIONS、DIRECT_MESSAGE、GUILD_MEMBERS；" +
-          "按钮交互 INTERACTION；消息审核 MESSAGE_AUDIT（后两者需单独申请）",
-      ],
-      id,
+    qblog.error(
+      `[${id}] intents 被拒绝（${lastError}），最后一次申请：${queue[queue.length - 1].list.join(" | ") || "（空）"}`,
+      "4013/4014 说明其中有 intent 未被该机器人授权：请到 QQ 开放平台确认已开启对应能力，" +
+        `或在 ${CFG_FILE} 的 intents 里只保留已授权的项。` +
+        "可用项：群消息 GROUP_AT_MESSAGE_CREATE、C2C_MESSAGE_CREATE；" +
+        "频道 GUILDS、GUILD_MESSAGES、PUBLIC_GUILD_MESSAGES、GUILD_MESSAGE_REACTIONS、DIRECT_MESSAGE、GUILD_MEMBERS；" +
+        "按钮交互 INTERACTION；消息审核 MESSAGE_AUDIT（后两者需单独申请）",
     )
     return false
   }
@@ -137,7 +124,7 @@ export default class AdapterLifecycle {
       secret: account.secret,
       intents,
     }
-    log("info", [`申请 intents：${intents.join(" | ") || "（空）"}`], id)
+    qblog.info(`[${id}] 申请 intents：${intents.join(" | ") || "（空）"}`)
 
     Bot[id] = accountEvents({
       adapter: this.id,
@@ -201,44 +188,13 @@ export default class AdapterLifecycle {
       callback: {},
     })
 
-    const silentSdkLogs = [
-      "等待断线重连中",
-      "重新连接中，尝试次数",
-      "连接成功",
-      "[WebSocketReceiver] 连接关闭：",
-      "[WebSocketReceiver] 连接断开，第",
-      "[WebSocketReceiver] 等待 ",
-      "WebSocket连接已建立",
-    ]
-    Bot[id].sdk.logger = {}
-    for (const level of ["trace", "debug", "info", "mark", "warn", "error", "fatal"])
-      Bot[id].sdk.logger[level] = (...args) => {
-        const head = String(args[0] ?? "")
-        if (head.startsWith("recv from")) return
-        if (
-          level === "debug" &&
-          !account.webhook &&
-          head.startsWith("[WebSocketReceiver] 收到消息: ")
-        )
-          return logEventPacket("WebSocket", head.slice("[WebSocketReceiver] 收到消息: ".length), id)
-        if (
-          level === "debug" &&
-          args[1] &&
-          typeof args[1] === "object" &&
-          args[1].t === args[0] &&
-          "d" in args[1]
-        )
-          return account.webhook ? logEventPacket(args[0], args[1], id) : undefined
-        if (level !== "error" && level !== "fatal" && silentSdkLogs.some(p => head.includes(p))) return
-        return log(level, args, id)
-      }
-
     const bot = Bot[id]
+    bot.sdk.logger = createSdkLogger(account)
     // 在连接之前监听，避免 ready 到 getSelfInfo 完成之间收到的消息丢失。
     const handle = (name, make) => event => {
       if (Bot[id] !== bot) return
       Promise.resolve().then(() => make.call(this, id, normalizeEvent(event)))
-        .catch(err => log("error", [`处理 QQBot ${name} 失败`, err], id))
+        .catch(err => qblog.error(`[${id}] 处理${name}失败`, err))
     }
     bot.sdk.on("message", handle("消息", this.makeMessage))
     bot.sdk.on("notice", handle("通知", this.makeNotice))
@@ -248,7 +204,7 @@ export default class AdapterLifecycle {
       bot.online = true
       markAdapterId(id, true)
       readyCount += 1
-      if (readyCount > 1) log("mark", "自动重连成功", id)
+      if (readyCount > 1) qblog.mark(`[${id}] 自动重连成功`)
     })
     bot.sdk.sessionManager.receiver?.on("close", () => {
       if (Bot[id] !== bot) return
@@ -286,10 +242,10 @@ export default class AdapterLifecycle {
     } catch (err) {
       const msg = err?.message || String(err)
       const intentError = /^40(13|14)\b/.test(msg)
-      log("error", [`${this.name}(${this.id}) ${this.version} 连接失败：${msg}`], id)
+      qblog.error(`[${id}] ${this.name}(${this.id}) ${this.version} 连接失败：${msg}`)
 
       if (/^491[45]\b/.test(msg))
-        log("error", ["4914/4915：机器人已下架或封禁，请到 QQ 开放平台处理"], id)
+        qblog.error(`[${id}] 4914/4915：机器人已下架或封禁，请到 QQ 开放平台处理`)
 
       try {
         await bot.sdk.stop()
@@ -304,7 +260,7 @@ export default class AdapterLifecycle {
 
     if (bot.online) {
       markAdapterId(id, true)
-      log("mark", `${this.name}(${this.id}) ${this.version} ${bot.nickname} 已连接`, id)
+      qblog.mark(`[${id}] ${this.name}(${this.id}) ${this.version} ${bot.nickname} 已连接`)
       dispatch(`connect.${id}`, { self_id: id })
     }
     return { ok: true }
@@ -320,13 +276,13 @@ export default class AdapterLifecycle {
         sign.keyPair.fromSeed(Buffer.from(secret)).secretKey,
       ),
     ).toString("hex")
-    log("debug", ["QQBot 签名生成", { plain_token, signature }], id)
+    qblog.debug(`[${id}] 签名生成`, { plain_token, signature })
     req.res.send({ plain_token, signature })
   }
 
   makeWebHook(req) {
     const appid = req.headers["x-bot-appid"]
-    if (!(appid in this.appid)) return log("warn", "找不到对应 QQBot", appid)
+    if (!(appid in this.appid)) return qblog.warn(`[${appid}] 找不到对应 QQBot`)
     if ("plain_token" in req.body?.d)
       return this.makeWebHookSign(this.appid[appid].uin, req, this.appid[appid].info.secret)
     if ("t" in req.body) this.appid[appid].sdk.dispatchEvent(req.body.t, req.body)
@@ -339,7 +295,7 @@ export default class AdapterLifecycle {
     this.started = true
 
     webhook.init()
-    this.load().catch(err => log("error", ["QQBot 适配器启动错误", err]))
+    this.load().catch(err => qblog.error("适配器启动错误", err))
   }
 
   async load() {

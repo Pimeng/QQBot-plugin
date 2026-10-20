@@ -17,7 +17,9 @@ export function memberInfo(info = {}, userId, groupId) {
   const role = info.member_role ?? info.role
   const joined = Date.parse(info.joined_at)
   return {
-    ...info, user_id: userId, group_id: groupId,
+    ...info,
+    user_id: userId,
+    group_id: groupId,
     nickname: info.nickname || info.username || userId,
     card: info.card || "",
     role: ["owner", "admin"].includes(role) ? role : "member",
@@ -47,7 +49,9 @@ export function fileName(pidOrName, name) {
 export function unixTime(value) {
   if (value === undefined || value === null || value === "") return undefined
   const numeric = Number(value)
-  const seconds = Number.isFinite(numeric) ? (numeric > 1e12 ? numeric / 1000 : numeric) : Date.parse(value) / 1000
+  let seconds = numeric
+  if (!Number.isFinite(numeric)) seconds = Date.parse(value) / 1000
+  else if (numeric > 1e12) seconds = numeric / 1000
   return Number.isFinite(seconds) ? Math.floor(seconds) : undefined
 }
 
@@ -58,11 +62,15 @@ export function sentResult(result) {
   if (!data.length && result.error.length) throw result.error.at(-1)
   const first = data[0]
   const timestamp = unixTime(first?.timestamp ?? first?.time)
-  return {
-    ...result, data, message_id: ids[0] || "", message_ids: ids,
-    ...(!result.partial && data.length ? { error: [], retry_errors: result.error } : {}),
-    ...(data.length ? { time: Number.isFinite(timestamp) ? Math.floor(timestamp) : Math.floor(Date.now() / 1000) } : {}),
-    ...(first?.seq !== undefined ? { seq: first.seq } : {}),
-    ...(first?.rand !== undefined ? { rand: first.rand } : {}),
+  const output = { ...result, data, message_id: ids[0] || "", message_ids: ids }
+  if (data.length) {
+    output.time = timestamp ?? Math.floor(Date.now() / 1000)
+    if (!result.partial) {
+      output.error = []
+      output.retry_errors = result.error
+    }
   }
+  if (first?.seq !== undefined) output.seq = first.seq
+  if (first?.rand !== undefined) output.rand = first.rand
+  return output
 }

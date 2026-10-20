@@ -85,15 +85,19 @@ export async function fixture(t, initial = {}, options = {}) {
     }, { context, identifier: key }))
     return cache.get(key)
   }
-  async function load(relative) {
+  async function sourceModule(relative) {
     const identifier = pathToFileURL(path.resolve(root, relative)).href
-    if (!cache.has(identifier)) cache.set(identifier, new SourceTextModule(
-      await readFile(fileURLToPath(identifier), "utf8"), {
+    if (!cache.has(identifier)) cache.set(identifier, readFile(fileURLToPath(identifier), "utf8").then(source => new SourceTextModule(
+      source, {
         context, identifier,
         initializeImportMeta(meta) { meta.url = identifier },
       },
-    ))
-    const module = cache.get(identifier)
+    )))
+    return cache.get(identifier)
+  }
+
+  async function load(relative) {
+    const module = await sourceModule(relative)
     if (module.status === "unlinked") await module.link(async (specifier, parent) => {
       if (specifier === "../../../../lib/config/config.js") return synthetic("hostConfig", overrides.hostConfig)
       if (specifier === "../uin.js") return synthetic("hostUin", overrides.hostUin)
@@ -101,7 +105,8 @@ export async function fixture(t, initial = {}, options = {}) {
       if (specifier === "../adapter/index.js") return synthetic("adapter", overrides.adapter)
       if (overrides[specifier]) return synthetic(specifier, overrides[specifier])
       if (!specifier.startsWith(".")) return synthetic(specifier, await import(specifier))
-      return load(path.relative(root, fileURLToPath(new URL(specifier, parent.identifier))))
+      // 由根模块一次性链接依赖图，避免共享依赖在并行链接时被重复求值。
+      return sourceModule(path.relative(root, fileURLToPath(new URL(specifier, parent.identifier))))
     })
     if (module.status === "linked") await module.evaluate()
     return module

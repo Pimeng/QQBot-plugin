@@ -5,19 +5,10 @@ import { encode as encodeSilk, isSilk } from "silk-wasm"
 import QRCode from "qrcode"
 import { ulid } from "ulid"
 import { config } from "../../lib/utils/cfg.js"
-import {
-  escapeMarkdownText,
-  exec,
-  fileToUrl,
-  isPublicUrl,
-  log,
-  markdownImage,
-  protectText,
-  restoreText,
-  rm,
-  sharp,
-  toBuffer,
-} from "../../lib/utils/common.js"
+import { escapeMarkdownText, isPublicUrl, markdownImage, protectText, restoreText } from "../../lib/utils/message.js"
+import { exec, rm, sharp, toBuffer } from "../../lib/utils/files.js"
+import { fileToUrl } from "../../lib/utils/file-upload.js"
+import { qblog } from "../../lib/utils/logger.js"
 import AdapterHistory from "../history.js"
 
 export default class MessageMedia extends AdapterHistory {
@@ -32,7 +23,7 @@ export default class MessageMedia extends AdapterHistory {
       await exec(`ffmpeg -i "${convFile}" -f s16le -ar 48000 -ac 1 "${convFile}.pcm"`)
       file = Buffer.from((await encodeSilk(await fs.readFile(`${convFile}.pcm`), 48000)).data)
     } catch (err) {
-      log("error", ["silk 转码错误", file, err])
+      qblog.error("silk 转码错误", file, err)
     }
     ;[convFile, `${convFile}.pcm`].map(i => rm(i))
 
@@ -73,7 +64,7 @@ export default class MessageMedia extends AdapterHistory {
         image.width = size.width
         image.height = size.height
       } catch (err) {
-        log("error", ["图片分辨率检测错误", file, err], data.self_id)
+        qblog.error(`[${data.self_id}] 图片分辨率检测错误`, file, err)
       }
 
     return {

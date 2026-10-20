@@ -1,13 +1,7 @@
 import { config } from "../../lib/utils/cfg.js"
-import {
-  expandForwardNodes,
-  log,
-  normalizeForwardNodes,
-  sharp,
-  toBuffer,
-  toSegment,
-  toStr,
-} from "../../lib/utils/common.js"
+import { expandForwardNodes, normalizeForwardNodes, toSegment, toStr } from "../../lib/utils/message.js"
+import { sharp, toBuffer } from "../../lib/utils/files.js"
+import { qblog } from "../../lib/utils/logger.js"
 import MessageMedia from "./media.js"
 
 export default class MessageBuilder extends MessageMedia {
@@ -230,16 +224,12 @@ export default class MessageBuilder extends MessageMedia {
       do {
         quality -= 10
         output = await sharp(buffer).jpeg({ quality }).toBuffer()
-        log(
-          "debug",
-          `图片压缩完成 ${quality}%(${(output.length / 1024).toFixed(2)}KB)`,
-          data.self_id,
-        )
+        qblog.debug(`[${data.self_id}] 图片压缩完成 ${quality}%(${(output.length / 1024).toFixed(2)}KB)`)
       } while (output.length > size && quality > 10)
 
       return output
     } catch (err) {
-      log("error", ["图片压缩错误", err], data.self_id)
+      qblog.error(`[${data.self_id}] 图片压缩错误`, err)
       return file
     }
   }

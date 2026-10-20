@@ -15,12 +15,40 @@
 - `adapter/history.js` 按账号保存实际接收消息，提供会话历史和单条消息查询。
 - `adapter/events.js` 负责将消息、按钮交互和通知转换为 Yunzai 事件，并维护好友、群和成员缓存。
 - `adapter/sdk.js` 封装 `qq-official-bot@1.3.0` 的接口差异，包括 WebSocket 模式、沙箱地址、事件与消息段转换，以及媒体分片上传处理。
+- `adapter/sdk-logger.js` 仅处理 SDK 重复日志过滤和完整网关包输出。
 - `lib/` 提供账号、配置、Bot 代理、事件构造与通用工具。
 - `config/defSet/cfg.yaml` 是随插件发布的默认配置；实际配置位于 `config/config/cfg.yaml`。首次启动时会复制默认配置，之后该文件的外部改动会热加载。
 
 适配器通过 Yunzai 的全局 `Bot`、`logger`、`segment` 等运行环境工作。收到的消息、通知和申请会构造成 Yunzai 事件，按根事件、场景、子类型逐层投递，例如 `message` → `message.group` → `message.group.normal`。监听器检测同时兼容 Node EventEmitter 的 listenerCount 与 ICQQ TripTrap 的 listeners，不要求存在 listenerCount。若没有根事件监听器，则直接交给插件加载器处理。事件标记 `adapter = "QQBot"`，用户和群 ID 会去除平台实例前缀。
 
 SDK 收到网关包时会以 `debug` 级别输出完整数据：WebSocket 记录收到的原始帧，WebHook 记录进入 SDK 的事件包；不识别的事件类型也会记录。
+
+### 修改代码时从哪里开始
+
+`lib/utils/common.js` 只保留旧导入的兼容出口。插件内部直接从对应模块导入，避免修改一个工具就牵动所有职责：
+
+| 模块 | 职责 |
+| --- | --- |
+| `logger.js` | 统一日志前缀，调用宿主 logger |
+| `message.js` | 消息段、发送模式、错误判断、Markdown 和转发节点工具 |
+| `files.js` | 文件读取、格式识别、图片压缩依赖和命令执行 |
+| `store.js` | JSON Map 编解码和延迟保存，沿用原数据格式与路径 |
+| `webhook.js` | HTTP 回调和静态文件服务 |
+| `file-upload.js` | 官方上传、文件直链和回退策略 |
+| `events.js` | Yunzai 事件构造、主人判断和事件投递 |
+
+业务日志直接写在处理位置，不另建日志描述表或分发规则：
+
+```js
+import { qblog } from "../lib/utils/logger.js"
+
+qblog.info(`[${id}] 账号已连接`)
+qblog.error(`[${id}] 消息处理失败`, error)
+```
+
+群聊、C2C 与频道共用 `sendWithFallback()` 和 `sendBatches()`；消息构建保持各场景的规则。新增发送策略时修改这条公共流程；一旦部分消息已发出，后续失败保留真实回执，停止整批重发。联系人共用消息查询、媒体上传方法；通知按事件类型进入具体处理方法。
+
+本地回归命令为 `npm test`，测试使用隔离配置和 SDK 桩，不连接实际机器人账号。
 
 ## 接收消息规范
 

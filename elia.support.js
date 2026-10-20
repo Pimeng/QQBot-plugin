@@ -4,7 +4,8 @@ import YAML from "yaml"
 import { isDeepStrictEqual } from "node:util"
 import { config, configSave } from "./lib/utils/cfg.js"
 import { getAccounts, normalizeAccount } from "./lib/utils/accounts.js"
-import { sharp, webhook } from "./lib/utils/common.js"
+import { sharp } from "./lib/utils/files.js"
+import { webhook } from "./lib/utils/webhook.js"
 
 const SEND_MODES = new Set(["auto", "markdown", "text"])
 const ACTIVE_MESSAGE_MODES = new Set(["auto", "true", "false"])

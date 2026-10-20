@@ -6,10 +6,10 @@ import {
   normalizeForwardNodes,
   protectText,
   restoreText,
-  sharp,
   toSegment,
   toStr,
-} from "../lib/utils/common.js"
+} from "../lib/utils/message.js"
+import { sharp } from "../lib/utils/files.js"
 import MessageBuilder from "./message/builder.js"
 
 export default class MarkdownBuilder extends MessageBuilder {

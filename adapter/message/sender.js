@@ -2,21 +2,25 @@ import { config, CFG_FILE } from "../../lib/utils/cfg.js"
 import { adaptSendableForSDK } from "../sdk.js"
 import {
   expandForwardNodes,
-  fileToUrl,
   isActiveMsgDenied,
   isMarkdownDenied,
   isPassiveReplyLimit,
-  log,
   needsMarkdown,
   normalizeForwardNodes,
   sendModeOf,
-  sharp,
   toPlainMsg,
   toSegment,
   toStr,
-} from "../../lib/utils/common.js"
+} from "../../lib/utils/message.js"
+import { fileToUrl } from "../../lib/utils/file-upload.js"
+import { sharp } from "../../lib/utils/files.js"
+import { qblog } from "../../lib/utils/logger.js"
 import MessageTransport from "./transport.js"
 import { sentResult } from "../compat.js"
+
+function hasSegment(messages, type) {
+  return messages.some(message => Array.isArray(message) && message.some(segment => segment?.type === type))
+}
 
 export default class MessageSender extends MessageTransport {
   async trackSend(data, pending) {
@@ -65,13 +69,9 @@ export default class MessageSender extends MessageTransport {
     if (!this.noReply) this.noReply = {}
     if (this.replyBlocked(id)) return
     this.noReply[id] = Date.now() + 5 * 60 * 1000
-    log(
-      "warn",
-      [
-        `${reason}，5 分钟内改用主动消息`,
-        `该状态到期会自动恢复引用回复；如想始终用引用回复，可设置 ${CFG_FILE}: activeMsg: false`,
-      ],
-      id,
+    qblog.warn(
+      `[${id}] ${reason}，5 分钟内改用主动消息`,
+      `该状态到期会自动恢复引用回复；如想始终用引用回复，可设置 ${CFG_FILE}: activeMsg: false`,
     )
   }
 
@@ -116,7 +116,7 @@ export default class MessageSender extends MessageTransport {
     return await this.makeMarkdownMsg(data, msg)
   }
 
-  /** 富媒体直传的目标（群 / 单聊），其它场景返回 null 交给 SDK */
+  /** 没有申请按钮交互事件时，提前提示回调按钮为什么无法使用。 */
   checkInteractionButtons(data, msg) {
     const id = data?.self_id
     if (!id || this.interactionWarned?.[id]) return
@@ -129,16 +129,12 @@ export default class MessageSender extends MessageTransport {
     if (!hasCallback) return
 
     this.interactionWarned[id] = true
-    log(
-      "warn",
-      [
-        "本条消息带「回调按钮」(keyboard.action.type=1)，但当前连接没有 INTERACTION intent（按钮交互）。",
-        "用户点击（若有二次确认，则在确认之后）会提示“请求第三方失败”，机器人也收不到 INTERACTION_CREATE。",
-        "解决：到 QQ 开放平台为该机器人开启「消息按钮/按钮交互」能力，重启后本插件会自动申请 INTERACTION；" +
-          `也可在 ${CFG_FILE} 的 intents 里显式写上 INTERACTION。`,
-        "若只想让按钮变成“发消息”，可把按钮改成 action.type=2（指令按钮）。",
-      ],
-      id,
+    qblog.warn(
+      `[${id}] 本条消息带「回调按钮」(keyboard.action.type=1)，但当前连接没有 INTERACTION intent（按钮交互）。`,
+      "用户点击（若有二次确认，则在确认之后）会提示“请求第三方失败”，机器人也收不到 INTERACTION_CREATE。",
+      "解决：到 QQ 开放平台为该机器人开启「消息按钮/按钮交互」能力，重启后本插件会自动申请 INTERACTION；" +
+        `也可在 ${CFG_FILE} 的 intents 里显式写上 INTERACTION。`,
+      "若只想让按钮变成“发消息”，可把按钮改成 action.type=2（指令按钮）。",
     )
   }
 
@@ -157,84 +153,86 @@ export default class MessageSender extends MessageTransport {
     return hit(msg)
   }
 
+  appendSendResult(result, sent) {
+    for (const item of [sent].flat(Infinity)) {
+      result.data.push(item)
+      if (item?.id) result.message_id.push(item.id)
+    }
+  }
+
+  /** 一旦有消息发出，就保留真实结果；后续失败不能整批重发。 */
+  async sendBatches(data, messages, send, result) {
+    if (result.partial) return false
+    for (const message of messages) {
+      try {
+        qblog.debug(`[${data.self_id}] 发送消息`, message)
+        const sent = await this.sendBatch(data, message, send)
+        qblog.debug(`[${data.self_id}] 发送消息返回`, sent)
+        this.appendSendResult(result, sent)
+      } catch (error) {
+        if (Array.isArray(error?.qqbotSent)) this.appendSendResult(result, error.qqbotSent)
+        if (result.data.length) result.partial = true
+        qblog.error(`[${data.self_id}] 发送消息错误`, message, error)
+        result.error.push(error)
+        return false
+      }
+    }
+    return true
+  }
+
+  /** 群、单聊和频道共用发送顺序，消息构建仍使用各自的规则。 */
+  async sendWithFallback(data, send, msg, guild = false) {
+    const result = { message_id: [], data: [], error: [] }
+    const build = plain => {
+      if (guild) return this.makeGuildMsg(data, plain ? toPlainMsg(msg) : msg)
+      return plain ? this.buildPlainMsgs(data, msg) : this.buildMsgs(data, msg)
+    }
+    let messages = await build(false)
+    // 构建后才会展开 replyExtra 和 miao 的 button 段。
+    if (!guild) this.checkInteractionButtons(data, messages ?? msg)
+    if (await this.sendBatches(data, messages, send, result)) return result
+    if (result.partial) return result
+
+    // Markdown 无权限或审核失败时，改发普通消息。
+    if (result.error.some(isMarkdownDenied) && hasSegment(messages, "markdown")) {
+      messages = await build(true)
+      if (await this.sendBatches(data, messages, send, result)) return result
+    }
+
+    // 群回调必须保留引用；其他消息在被动回复超限后尝试主动发送。
+    if (
+      (guild || data.sub_type !== "callback") &&
+      result.error.some(isPassiveReplyLimit) &&
+      this.activeMsgMode(data) !== false
+    ) {
+      const blocked = this.replyBlocked(data.self_id)
+      this.markNoReply(
+        data.self_id,
+        guild ? "频道被动回复超出时间/次数限制" : "被动回复超出时间/次数限制（40034128）",
+      )
+      if (!blocked) {
+        messages = await build(false)
+        if (await this.sendBatches(data, messages, send, result)) return result
+      }
+    }
+
+    // 没有主动推送权限时，尝试恢复带引用的被动回复。
+    if (result.error.some(isActiveMsgDenied) && !hasSegment(messages, "reply") && this.useReply(data)) {
+      messages = await build(false)
+      if (await this.sendBatches(data, messages, send, result)) return result
+    }
+
+    // 文件不能作为普通文本再次投递；频道文件已在构建时转为链接。
+    if (!guild && hasSegment(messages, "file")) return result
+    messages = await build(true)
+    await this.sendBatches(data, messages, send, result)
+    return result
+  }
+
   async sendMsg(data, send, msg) {
-    const rets = { message_id: [], data: [], error: [] }
-    let msgs = await this.buildMsgs(data, msg)
-    /** 构建后的消息里才有展开的 keyboard/button（replyExtra、miao button 段都在这一步落地） */
-    this.checkInteractionButtons(data, msgs ?? msg)
-    let passiveLimited = false
-    let activeDenied = false
-    let markdownDenied = false
-
-    const sendAll = async () => {
-      if (rets.partial) return false
-      for (const i of msgs)
-        try {
-          log("debug", ["发送消息", i], data.self_id)
-          const ret = await this.sendBatch(data, i, send)
-          log("debug", ["发送消息返回", ret], data.self_id)
-
-          rets.data.push(...[ret].flat(Infinity))
-          for (const item of [ret].flat(Infinity)) if (item?.id) rets.message_id.push(item.id)
-        } catch (err) {
-          if (Array.isArray(err?.qqbotSent)) {
-            rets.data.push(...err.qqbotSent.flat(Infinity))
-            for (const item of err.qqbotSent.flat(Infinity)) if (item?.id) rets.message_id.push(item.id)
-          }
-          if (rets.data.length) rets.partial = true
-          log("error", ["发送消息错误", i, err], data.self_id)
-          rets.error.push(err)
-          if (isPassiveReplyLimit(err)) passiveLimited = true
-          if (isActiveMsgDenied(err)) activeDenied = true
-          if (isMarkdownDenied(err)) markdownDenied = true
-          return false
-        }
-      return true
-    }
-
-    if ((await sendAll()) === false) {
-      if (rets.partial) {
-        if (Array.isArray(data._ret_id)) data._ret_id.push(...rets.message_id)
-        return sentResult(rets)
-      }
-      /** markdown 被平台拒绝（无权限 / 参数错 / 审核）：剥成纯文本重发，重试 markdown 没有意义 */
-      if (markdownDenied && msgs.some(i => Array.isArray(i) && i.some(s => s?.type === "markdown"))) {
-        msgs = await this.buildPlainMsgs(data, msg)
-        if (await sendAll()) {
-          if (Array.isArray(data._ret_id)) data._ret_id.push(...rets.message_id)
-          return sentResult(rets)
-        }
-      }
-      /** 被动回复被拒 → 去掉引用改用主动消息重发；成功即说明本账号有主动推送权限 */
-      if (data.sub_type !== "callback" && passiveLimited && this.activeMsgMode(data) !== false) {
-        const blocked = this.replyBlocked(data.self_id)
-        this.markNoReply(data.self_id, "被动回复超出时间/次数限制（40034128）")
-        if (!blocked) {
-          msgs = await this.buildMsgs(data, msg)
-          if (await sendAll()) {
-            if (Array.isArray(data._ret_id)) data._ret_id.push(...rets.message_id)
-            return sentResult(rets)
-          }
-        }
-      }
-      /** 反方向兜底：账号没有主动推送权限时，主动消息必然 40034105，改回带引用的被动回复再试一次 */
-      if (activeDenied && !msgs.some(i => i.some(s => s?.type === "reply")) && this.useReply(data)) {
-        msgs = await this.buildMsgs(data, msg)
-        if (await sendAll()) {
-          if (Array.isArray(data._ret_id)) data._ret_id.push(...rets.message_id)
-          return sentResult(rets)
-        }
-      }
-      if (msgs.some(i => i.some(s => s?.type === "file"))) {
-        if (Array.isArray(data._ret_id)) data._ret_id.push(...rets.message_id)
-        return sentResult(rets)
-      }
-      msgs = await this.buildPlainMsgs(data, msg)
-      await sendAll()
-    }
-
-    if (Array.isArray(data._ret_id)) data._ret_id.push(...rets.message_id)
-    return sentResult(rets)
+    const result = await this.sendWithFallback(data, send, msg)
+    if (Array.isArray(data._ret_id)) data._ret_id.push(...result.message_id)
+    return sentResult(result)
   }
 
   /** active: true 表示主动推送（不带 msg_id），不属于回复；普通回复不要传 */
@@ -244,7 +242,8 @@ export default class MessageSender extends MessageTransport {
       ...(active ? { active: true } : {}),
       _mediaTarget: { target_type: "user", target_id: data.user_id },
     }
-    return this.trackSend(data, this.sendMsg(data, msg => data.bot.sdk.sendPrivateMessage(data.user_id, adaptSendableForSDK(msg)), msg))
+    const send = message => data.bot.sdk.sendPrivateMessage(data.user_id, adaptSendableForSDK(message))
+    return this.trackSend(data, this.sendMsg(data, send, msg))
   }
 
   sendGroupMsg(data, msg, active = false) {
@@ -253,10 +252,11 @@ export default class MessageSender extends MessageTransport {
       ...(active ? { active: true } : {}),
       _mediaTarget: { target_type: "group", target_id: data.group_id },
     }
-    return this.trackSend(data, this.sendMsg(data, msg => data.bot.sdk.sendGroupMessage(data.group_id, adaptSendableForSDK(msg)), msg))
+    const send = message => data.bot.sdk.sendGroupMessage(data.group_id, adaptSendableForSDK(message))
+    return this.trackSend(data, this.sendMsg(data, send, msg))
   }
 
-  async makeGuildMsg(data, msg, nested) {
+  async makeGuildMsg(data, msg) {
     msg = this.dedupeAt(data, msg)
     const messages = []
     let message = [],
@@ -346,72 +346,13 @@ export default class MessageSender extends MessageTransport {
   }
 
   async sendGMsg(data, send, msg) {
-    const rets = { message_id: [], data: [], error: [] }
-    let msgs = await this.makeGuildMsg(data, msg)
-    let passiveLimited = false
-    let activeDenied = false
-    let markdownDenied = false
-
-    const sendAll = async () => {
-      if (rets.partial) return false
-      for (const i of msgs)
-        try {
-          log("debug", ["发送消息", i], data.self_id)
-          const ret = await this.sendBatch(data, i, send)
-          log("debug", ["发送消息返回", ret], data.self_id)
-
-          rets.data.push(...[ret].flat(Infinity))
-          for (const item of [ret].flat(Infinity)) if (item?.id) rets.message_id.push(item.id)
-        } catch (err) {
-          if (Array.isArray(err?.qqbotSent)) {
-            rets.data.push(...err.qqbotSent.flat(Infinity))
-            for (const item of err.qqbotSent.flat(Infinity)) if (item?.id) rets.message_id.push(item.id)
-          }
-          if (rets.data.length) rets.partial = true
-          log("error", ["发送消息错误", i, err], data.self_id)
-          rets.error.push(err)
-          if (isPassiveReplyLimit(err)) passiveLimited = true
-          if (isActiveMsgDenied(err)) activeDenied = true
-          if (isMarkdownDenied(err)) markdownDenied = true
-          return false
-        }
-      return true
-    }
-
-    if ((await sendAll()) === false) {
-      if (rets.partial) return sentResult(rets)
-      /** markdown 被平台拒绝：剥成纯文本重发 */
-      if (markdownDenied && msgs.some(i => Array.isArray(i) && i.some(s => s?.type === "markdown"))) {
-        msgs = await this.makeGuildMsg(data, toPlainMsg(msg))
-        if (await sendAll()) return sentResult(rets)
-      }
-      if (passiveLimited && this.activeMsgMode(data) !== false) {
-        const blocked = this.replyBlocked(data.self_id)
-        this.markNoReply(data.self_id, "频道被动回复超出时间/次数限制")
-        if (!blocked) {
-          msgs = await this.makeGuildMsg(data, msg)
-          if (await sendAll()) return sentResult(rets)
-        }
-      }
-      /** 反方向兜底：没有主动消息权限时改回带引用的被动回复再试一次 */
-      if (activeDenied && !msgs.some(i => i.some(s => s?.type === "reply")) && this.useReply(data)) {
-        msgs = await this.makeGuildMsg(data, msg)
-        if (await sendAll()) return sentResult(rets)
-      }
-      msgs = await this.makeGuildMsg(data, toPlainMsg(msg))
-      await sendAll()
-    }
-    return sentResult(rets)
+    return sentResult(await this.sendWithFallback(data, send, msg, true))
   }
 
   async sendDirectMsg(data, msg) {
     if (!data.guild_id) {
       if (!data.src_guild_id) {
-        log(
-          "error",
-          [`发送频道私聊消息失败：[${data.user_id}] 不存在来源频道信息`, msg],
-          data.self_id,
-        )
+        qblog.error(`[${data.self_id}] 发送频道私聊消息失败：[${data.user_id}] 不存在来源频道信息`, msg)
         return false
       }
       const dms = await data.bot.sdk.createDirectSession(data.src_guild_id, data.user_id)
@@ -422,11 +363,13 @@ export default class MessageSender extends MessageTransport {
         ...dms,
       })
     }
-    return this.trackSend(data, this.sendGMsg(data, msg => data.bot.sdk.sendDirectMessage(data.guild_id, adaptSendableForSDK(msg)), msg))
+    const send = message => data.bot.sdk.sendDirectMessage(data.guild_id, adaptSendableForSDK(message))
+    return this.trackSend(data, this.sendGMsg(data, send, msg))
   }
 
   sendGuildMsg(data, msg) {
-    return this.trackSend(data, this.sendGMsg(data, msg => data.bot.sdk.sendGuildMessage(data.channel_id, adaptSendableForSDK(msg)), msg))
+    const send = message => data.bot.sdk.sendGuildMessage(data.channel_id, adaptSendableForSDK(message))
+    return this.trackSend(data, this.sendGMsg(data, send, msg))
   }
 
   async recallMsg(data, recall, message_id) {
@@ -438,28 +381,24 @@ export default class MessageSender extends MessageTransport {
       try {
         msgs.push(await recall(i))
       } catch (err) {
-        log("debug", ["撤回消息错误", i, err], data.self_id)
+        qblog.debug(`[${data.self_id}] 撤回消息错误`, i, err)
         msgs.push(false)
       }
     return multiple ? msgs : Boolean(msgs[0])
   }
 
   recallFriendMsg(data, message_id) {
-    log("info", `撤回好友消息：[${data.user_id}] ${message_id}`, data.self_id)
+    qblog.info(`[${data.self_id}] 撤回好友消息：[${data.user_id}] ${message_id}`)
     return this.recallMsg(data, i => data.bot.sdk.user(data.user_id).recall(i), message_id)
   }
 
   recallGroupMsg(data, message_id) {
-    log("info", `撤回群消息：[${data.group_id}] ${message_id}`, data.self_id)
+    qblog.info(`[${data.self_id}] 撤回群消息：[${data.group_id}] ${message_id}`)
     return this.recallMsg(data, i => data.bot.sdk.recallGroupMessage(data.group_id, i), message_id)
   }
 
   recallDirectMsg(data, message_id, hide = config.hideGuildRecall) {
-    log(
-      "info",
-      `撤回${hide ? "并隐藏" : ""}频道私聊消息：[${data.guild_id}] ${message_id}`,
-      data.self_id,
-    )
+    qblog.info(`[${data.self_id}] 撤回${hide ? "并隐藏" : ""}频道私聊消息：[${data.guild_id}] ${message_id}`)
     return this.recallMsg(
       data,
       i => data.bot.sdk.recallDirectMessage(data.guild_id, i, hide),
@@ -468,23 +407,11 @@ export default class MessageSender extends MessageTransport {
   }
 
   recallGuildMsg(data, message_id, hide = config.hideGuildRecall) {
-    log(
-      "info",
-      `撤回${hide ? "并隐藏" : ""}频道消息：[${data.channel_id}] ${message_id}`,
-      data.self_id,
-    )
+    qblog.info(`[${data.self_id}] 撤回${hide ? "并隐藏" : ""}频道消息：[${data.channel_id}] ${message_id}`)
     return this.recallMsg(
       data,
       i => data.bot.sdk.recallGuildMessage(data.channel_id, i, hide),
       message_id,
     )
   }
-
-  /**
-   * 供 miao 的 common.makeForwardMsg 及插件使用
-   *
-   * QQ 官方机器人接口没有合并转发能力：这里返回适配器可识别的 node 段，
-   * 发送时会把转发内容并成一条消息，并以引用回复（引用触发消息）的形式发出。
-   */
-
 }

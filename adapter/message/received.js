@@ -29,6 +29,28 @@ export function isAtSelf(event) {
   ) === true
 }
 
+/** 转换 @ 的场景 ID，保留 SDK 原消息段供其它调用方使用。 */
+export function receivedMessageSegments(event, selfId, separator, bot) {
+  const message = (event.message || []).map(item => ({ ...item }))
+  for (const item of message) {
+    if (item.type !== "at") continue
+    if (item.qq === "all" || item.user_id === "all") item.qq = "all"
+    else if (item.is_you === true || item.is_you === "true") item.qq = selfId
+    else if (event.message_type === "group" || event.sub_type === "friend")
+      item.qq = `${selfId}${separator}${item.user_id || item.qq}`
+    else item.qq = `qg_${item.user_id}`
+  }
+
+  // GROUP_AT_MESSAGE_CREATE 有时不含机器人占位符，事件名仍能证明该次 @。
+  const atSelf = message.some(item => item.type === "at" && String(item.qq) === String(selfId))
+  if (event.message_type === "group" && isAtSelf(event) && !atSelf) {
+    const name = bot.nickname || bot.info?.username || String(selfId)
+    const index = message[0]?.type === "reply" ? 1 : 0
+    message.splice(index, 0, { type: "at", qq: selfId, user_id: String(selfId), is_you: true, text: `@${name}` })
+  }
+  return message
+}
+
 export function normalizeReceivedSegment(item, mentions = []) {
   if (!item || typeof item !== "object") return item
   const { data, ...fields } = item

@@ -1,6 +1,7 @@
 import AdapterLifecycle from "./lifecycle.js"
 import { config } from "../lib/utils/cfg.js"
-import { buildMiaoEvent, getMap } from "../lib/utils/common.js"
+import { buildMiaoEvent } from "../lib/utils/events.js"
+import { getMap } from "../lib/utils/store.js"
 import { plainId } from "./compat.js"
 import { receivedFileUrl } from "./message/received.js"
 
