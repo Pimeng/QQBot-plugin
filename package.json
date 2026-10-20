@@ -4,6 +4,9 @@
   "description": "Yunzai 的 QQ 官方机器人（QQBot）适配器，提供与 icqq 一致的插件使用体验",
   "main": "index.js",
   "type": "module",
+  "scripts": {
+    "test": "node --experimental-vm-modules --test tests/*.test.mjs"
+  },
   "keywords": ["yunzai", "qqbot", "adapter", "qq-official-bot"],
   "author": "Pimeng",
   "license": "GPL-3.0",

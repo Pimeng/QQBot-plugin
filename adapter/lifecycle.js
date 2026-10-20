@@ -1,4 +1,6 @@
 import { config, CFG_FILE } from "../lib/utils/cfg.js"
+import { EventEmitter } from "node:events"
+import { contactMap } from "../lib/contact-map.js"
 import { getAccounts, normalizeAccount } from "../lib/utils/accounts.js"
 import {
   createBot,
@@ -18,6 +20,16 @@ import {
   webhook,
 } from "../lib/utils/common.js"
 
+/** 账号监听拿到与全局 Bot 相同的 Yunzai 事件，SDK 的原始事件保持在 sdk 上。 */
+export function accountEvents(bot) {
+  const events = new EventEmitter()
+  for (const method of ["on", "once", "off", "addListener", "removeListener", "removeAllListeners", "prependListener", "prependOnceListener", "setMaxListeners"])
+    bot[method] = (...args) => { events[method](...args); return bot }
+  for (const method of ["emit", "listeners", "rawListeners", "listenerCount", "eventNames", "getMaxListeners"])
+    bot[method] = (...args) => events[method](...args)
+  return bot
+}
+
 export default class AdapterLifecycle {
   /**
    * 生成 intents
@@ -26,9 +38,7 @@ export default class AdapterLifecycle {
    */
   makeIntents(account) {
     if (Array.isArray(config.intents) && config.intents.length) return [...config.intents]
-    if (account.group) return [...GROUP_INTENTS]
-    if (account.guild) return [...GUILD_MESSAGE_INTENTS]
-    return []
+    return [...new Set([...(account.group ? GROUP_INTENTS : []), ...(account.guild ? GUILD_MESSAGE_INTENTS : [])])]
   }
 
   /** 按能力从多到少构造重试用的 intents 组合。 */
@@ -45,12 +55,13 @@ export default class AdapterLifecycle {
     push(wanted)
     push(wanted.filter(i => !OPTIONAL_INTENTS.includes(i)))
 
-    if (!explicit && account.guild && !wanted.some(i => GUILD_MESSAGE_INTENTS.includes(i))) {
+    if (!explicit && account.guild) {
       push([...GUILD_MESSAGE_INTENTS])
       push(GUILD_MESSAGE_INTENTS.filter(i => !OPTIONAL_INTENTS.includes(i)))
     }
 
     if (!explicit && account.group) push(["GROUP_AT_MESSAGE_CREATE", "C2C_MESSAGE_CREATE"])
+    if (!candidates.length) candidates.push({ list: [], key: "" })
     return candidates
   }
 
@@ -72,7 +83,13 @@ export default class AdapterLifecycle {
     let lastError = null
     for (let i = 0; i < queue.length; i++) {
       const { list } = queue[i]
-      const ret = await this.connectOnce(id, account, list)
+      let ret
+      try {
+        ret = await this.connectOnce(id, account, list)
+      } catch (err) {
+        log("error", ["QQBot 账号初始化失败", err], id)
+        return false
+      }
       if (ret.ok) {
         this.activeIntents[id] = [...list]
         if (Bot[id]?.info) Bot[id].info.intents = [...list]
@@ -122,20 +139,27 @@ export default class AdapterLifecycle {
     }
     log("info", [`申请 intents：${intents.join(" | ") || "（空）"}`], id)
 
-    Bot[id] = {
+    Bot[id] = accountEvents({
       adapter: this.id,
       sdk: createBot(opts),
-      login: () => sdkLogin(Bot[id].sdk, opts.connectTimeout || 30000),
+      async login() {
+        if (Bot[id] !== this) throw new Error("QQBot 账号连接已被替换")
+        await sdkLogin(this.sdk, opts.connectTimeout || 30000)
+        if (Bot[id] === this && this.online) markAdapterId(id, true)
+      },
       logout() {
-        markAdapterId(id, false)
+        this.online = false
+        if (Bot[id] === this) markAdapterId(id, false)
         return sdkLogout(this.sdk)
       },
 
       uin: id,
+      online: false,
+      isOnline() { return this.online },
       info: {
         id,
         ...opts,
-        avatar: `https://q.qlogo.cn/g?b=qq&s=0&nk=${this.uin}`,
+        avatar: `https://q.qlogo.cn/g?b=qq&s=0&nk=${id}`,
       },
       get nickname() {
         return this.info.username
@@ -149,7 +173,7 @@ export default class AdapterLifecycle {
         name: this.name,
         version: this.version,
       },
-      stat: { start_time: Date.now() / 1000 },
+      stat: { start_time: Date.now() / 1000, recv_msg_cnt: 0, sent_msg_cnt: 0 },
 
       pickFriend: user_id => this.pickFriend(id, user_id),
       get pickUser() {
@@ -158,7 +182,7 @@ export default class AdapterLifecycle {
       getFriendMap() {
         return this.fl
       },
-      fl: await this.getFriendMap(id),
+      fl: contactMap(await this.getFriendMap(id), id, this.sep),
 
       pickMember: (group_id, user_id) => this.pickMember(id, group_id, user_id),
       pickGroup: group_id => this.pickGroup(id, group_id),
@@ -166,15 +190,16 @@ export default class AdapterLifecycle {
       getGroupMap() {
         return this.gl
       },
-      gl: await this.getGroupMap(id),
-      gml: await this.getMemberMap(id),
+      gl: contactMap(await this.getGroupMap(id), id, this.sep),
+      gml: contactMap(await this.getMemberMap(id), id, this.sep, true),
+      messageCache: await this.getMessageMap(id),
 
       uploadImage: (file, opts) => this.uploadImage(id, file, opts),
       fileToUrl: (file, opts) => this.fileToUrl(id, file, opts),
       filetoUrl: (file, opts) => this.fileToUrl(id, file, opts),
 
       callback: {},
-    }
+    })
 
     const silentSdkLogs = [
       "等待断线重连中",
@@ -208,24 +233,56 @@ export default class AdapterLifecycle {
         return log(level, args, id)
       }
 
+    const bot = Bot[id]
+    // 在连接之前监听，避免 ready 到 getSelfInfo 完成之间收到的消息丢失。
+    const handle = (name, make) => event => {
+      if (Bot[id] !== bot) return
+      Promise.resolve().then(() => make.call(this, id, normalizeEvent(event)))
+        .catch(err => log("error", [`处理 QQBot ${name} 失败`, err], id))
+    }
+    bot.sdk.on("message", handle("消息", this.makeMessage))
+    bot.sdk.on("notice", handle("通知", this.makeNotice))
     let readyCount = 0
-    Bot[id].sdk.sessionManager.receiver?.on("ready", () => {
+    bot.sdk.sessionManager.receiver?.on("ready", () => {
+      if (Bot[id] !== bot) return
+      bot.online = true
+      markAdapterId(id, true)
       readyCount += 1
       if (readyCount > 1) log("mark", "自动重连成功", id)
+    })
+    bot.sdk.sessionManager.receiver?.on("close", () => {
+      if (Bot[id] !== bot) return
+      bot.online = false
+      markAdapterId(id, false)
     })
 
     try {
       if (account.webhook) {
-        await Bot[id].sdk.sessionManager.getAccessToken()
-        Bot[id].login = () => (this.appid[opts.appid] = Bot[id])
-        Bot[id].logout = () => {
-          markAdapterId(id, false)
-          return delete this.appid[opts.appid]
+        await bot.sdk.sessionManager.getAccessToken()
+        if (Bot[id] !== bot) {
+          await sdkLogout(bot.sdk)
+          return { ok: false, intentError: false, error: "QQBot 账号连接已被替换" }
+        }
+        bot.login = () => {
+          if (Bot[id] !== bot) throw new Error("QQBot 账号连接已被替换")
+          bot.online = true
+          markAdapterId(id, true)
+          return (this.appid[opts.appid] = bot)
+        }
+        bot.logout = () => {
+          bot.online = false
+          if (Bot[id] === bot) markAdapterId(id, false)
+          if (this.appid[opts.appid] === bot) return delete this.appid[opts.appid]
+          return false
         }
       }
 
-      await Bot[id].login()
-      Object.assign(Bot[id].info, await Bot[id].sdk.getSelfInfo())
+      await bot.login()
+      Object.assign(bot.info, await bot.sdk.getSelfInfo())
+      if (Bot[id] !== bot) {
+        await sdkLogout(bot.sdk)
+        return { ok: false, intentError: false, error: "QQBot 账号连接已被替换" }
+      }
     } catch (err) {
       const msg = err?.message || String(err)
       const intentError = /^40(13|14)\b/.test(msg)
@@ -235,20 +292,21 @@ export default class AdapterLifecycle {
         log("error", ["4914/4915：机器人已下架或封禁，请到 QQ 开放平台处理"], id)
 
       try {
-        await Bot[id].sdk.stop()
+        await bot.sdk.stop()
       } catch (e) {}
-      delete Bot[id]
-      markAdapterId(id, false)
-      if (account.webhook) delete this.appid[opts.appid]
+      if (Bot[id] === bot) {
+        delete Bot[id]
+        markAdapterId(id, false)
+      }
+      if (account.webhook && this.appid[opts.appid] === bot) delete this.appid[opts.appid]
       return { ok: false, intentError, error: msg }
     }
 
-    Bot[id].sdk.on("message", event => this.makeMessage(id, normalizeEvent(event)))
-    Bot[id].sdk.on("notice", event => this.makeNotice(id, normalizeEvent(event)))
-
-    markAdapterId(id, true)
-    log("mark", `${this.name}(${this.id}) ${this.version} ${Bot[id].nickname} 已连接`, id)
-    dispatch(`connect.${id}`, { self_id: id })
+    if (bot.online) {
+      markAdapterId(id, true)
+      log("mark", `${this.name}(${this.id}) ${this.version} ${bot.nickname} 已连接`, id)
+      dispatch(`connect.${id}`, { self_id: id })
+    }
     return { ok: true }
   }
 

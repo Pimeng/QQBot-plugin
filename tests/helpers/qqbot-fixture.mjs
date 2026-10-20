@@ -10,20 +10,20 @@ import YAML from "yaml"
 const root = fileURLToPath(new URL("../../", import.meta.url))
 
 /** 读取真实插件源码，隔离宿主、配置文件和 SDK；HTTP 使用真实的临时本机端口。 */
-export async function fixture(t, initial = {}) {
+export async function fixture(t, initial = {}, options = {}) {
   const warnings = []
   const debugLogs = []
   const listenPorts = []
   const files = new Map()
   const cfgFile = "./plugins/QQBot-Plugin/config/config/cfg.yaml"
   files.set("./plugins/QQBot-Plugin/config/defSet/cfg.yaml", YAML.stringify({
-    accounts: [], token: [], webhookPort: 0, url: "", imageLength: 0,
+    accounts: [], token: [], webhookPort: 0, url: "", imageLength: 0, refreshGroupState: false,
   }))
   if (initial !== null) files.set(cfgFile, YAML.stringify(initial))
   let watchChange
   let connections = 0
   const context = createContext({
-    Buffer, URL, AbortSignal, setTimeout, clearTimeout, fetch, console,
+    Buffer, URL, AbortSignal, Map, Set, setTimeout, clearTimeout, fetch, console,
     Bot: {}, plugin: class {},
     logger: {
       warn: (...args) => warnings.push(args.join(" ")),
@@ -75,8 +75,9 @@ export async function fixture(t, initial = {}) {
     sdk: {
       createBot: () => { throw new Error("此用例不应创建 SDK") },
       login() {}, logout() {}, normalizeEvent: event => event,
+      ...options.sdk,
     },
-    adapter: { qqbot: { connect: async () => { connections++; return true } } },
+    adapter: { qqbot: { sep: ":", connect: async () => { connections++; return true } } },
   }
   async function synthetic(key, values) {
     if (!cache.has(key)) cache.set(key, new SyntheticModule(Object.keys(values), function () {
@@ -87,7 +88,10 @@ export async function fixture(t, initial = {}) {
   async function load(relative) {
     const identifier = pathToFileURL(path.resolve(root, relative)).href
     if (!cache.has(identifier)) cache.set(identifier, new SourceTextModule(
-      await readFile(fileURLToPath(identifier), "utf8"), { context, identifier },
+      await readFile(fileURLToPath(identifier), "utf8"), {
+        context, identifier,
+        initializeImportMeta(meta) { meta.url = identifier },
+      },
     ))
     const module = cache.get(identifier)
     if (module.status === "unlinked") await module.link(async (specifier, parent) => {
@@ -111,6 +115,7 @@ export async function fixture(t, initial = {}) {
   }
   return { ...common, ...cfg, warnings, debugLogs, listenPorts, files, changeFile, load,
     setBot: bot => { context.Bot = bot },
+    getBot: () => context.Bot,
     connections: () => connections,
   }
 }

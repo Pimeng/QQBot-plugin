@@ -11,11 +11,13 @@
  *   adapter/message/sender.js 消息组装、回复策略与发送协调
  *   adapter/message/transport.js 富媒体上传与批次传输
  *   adapter/bot-api.js Bot.pick* 对象与主动消息代理
+ *   adapter/history.js 接收消息留档、历史分页与消息查询
  *   adapter/events.js 入站消息、交互、通知与缓存
  *   adapter/sdk.js      qq-official-bot SDK 适配层
  *   lib/index.js        统一出口（qqbotCommon / cfg / config / configSave）
  *   lib/bot.js          全局 Bot 代理（跨适配器 pick*）
- *   lib/uin.js          宿主 Bot.uin 单账号值快照
+ *   lib/contact-map.js 账号缓存 ID 别名与实时 Map 视图
+ *   lib/uin.js          原始宿主账号与在线状态
  *   lib/plugin.js       管理指令插件
  *   lib/utils/cfg.js    插件内配置读写
  *   lib/utils/common.js 日志 / 持久化 / WebHook / 消息工具

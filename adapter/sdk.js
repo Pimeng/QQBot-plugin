@@ -13,6 +13,7 @@
  */
 
 import SDK from "qq-official-bot"
+import process from "node:process"
 import { normalizeReceivedSegment, prepareReceivedPayload, receivedMessageText } from "./message/received.js"
 import { unixTime } from "./compat.js"
 
@@ -212,7 +213,19 @@ export function createBot(opts = {}) {
   }
   if (opts.sandbox) config.apiBaseUrl = SANDBOX_API_BASE
 
-  const sdk = new Bot(config)
+  // SDK 在每次构造时添加全局异常监听器，只用于 debug 日志。账号重连和
+  // intents 降级会反复构造实例，保留这些闭包会泄漏实例并重复记录宿主异常。
+  // 构造是同步的，仅移除本次新增的监听器，保留宿主和其它适配器已有监听。
+  const processEvents = ["uncaughtException", "unhandledRejection"]
+  const existingListeners = new Map(processEvents.map(name => [name, new Set(process.listeners(name))]))
+  let sdk
+  try {
+    sdk = new Bot(config)
+  } finally {
+    for (const name of processEvents)
+      for (const listener of process.listeners(name))
+        if (!existingListeners.get(name).has(listener)) process.removeListener(name, listener)
+  }
   // 1.3.0 的这两个方法仍直接抛 UnsupportedMethodError。按上游 GroupService
   // 的 /members 接口补齐，只在插件显式刷新时请求，不在每条入站消息上拉取。
   const pendingMembers = new Map()
@@ -245,13 +258,18 @@ export function createBot(opts = {}) {
   sdk.processPayload = (id, name, payload) => {
     const type = payload?.message_type
     const isMessage = ["message.group", "message.group.at", "message.private.friend", "message.private.direct", "message.guild"].includes(name)
-    const parsed = rawProcessPayload(id, name, isMessage ? prepareReceivedPayload(payload) : payload)
+    // 1.3.0 的频道按钮 parser 误写为 resoloved；输入兼容别名保留真实 resolved。
+    const input = name === "notice.guild.action" && payload?.data?.resolved
+      ? { ...payload, data: { ...payload.data, resoloved: payload.data.resolved } } : payload
+    const parsed = rawProcessPayload(id, name, isMessage ? prepareReceivedPayload(input) : input)
     if (parsed) {
       parsed._eventName = name
       if (name.startsWith("notice")) {
         parsed._qqbotTimestamp = payload?.timestamp
-        for (const key of ["username", "member_role", "guild_id", "channel_id"])
+        for (const key of ["username", "member_role", "guild_id", "channel_id", "roles", "nick"])
           if (parsed[key] === undefined && payload?.[key] !== undefined) parsed[key] = payload[key]
+        if (!parsed.user_name && payload?.user?.username) parsed.user_name = payload.user.username
+        if (payload?.user?.avatar) parsed.avatar = payload.user.avatar
         if (typeof payload?.bot === "boolean") parsed.is_bot = payload.bot
       }
     }
@@ -365,6 +383,8 @@ export function normalizeQuotedEvent(event) {
   // message_id or match other messages merely by identical text.
   const messageId = reference?.message_id ?? reference?.id ?? quoted?.message_id ?? ""
   event.source = { message_id: typeof messageId === "string" ? messageId.slice(0, 200) : "", ...(summary ? { raw_message: summary } : {}) }
+  for (const key of ["seq", "rand", "user_id", "time"])
+    if (reference?.[key] !== undefined) event.source[key] = reference[key]
   if (!Array.isArray(event.message)) event.message = []
   if (!event.message.some(segment => segment?.type === "reply")) event.message.unshift({ type: "reply", id: event.source.message_id, ...(summary ? { text: summary } : {}) })
   return event

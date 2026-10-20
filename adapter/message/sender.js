@@ -19,6 +19,13 @@ import MessageTransport from "./transport.js"
 import { sentResult } from "../compat.js"
 
 export default class MessageSender extends MessageTransport {
+  async trackSend(data, pending) {
+    const result = await pending
+    if (data.bot.stat && result?.data?.length)
+      data.bot.stat.sent_msg_cnt = (data.bot.stat.sent_msg_cnt || 0) + result.data.length
+    return result
+  }
+
   activeMsgMode(data) {
     if (data?.message_type !== "group" || data.sub_type === "callback" || !data.group_id)
       return config.activeMsg
@@ -237,7 +244,7 @@ export default class MessageSender extends MessageTransport {
       ...(active ? { active: true } : {}),
       _mediaTarget: { target_type: "user", target_id: data.user_id },
     }
-    return this.sendMsg(data, msg => data.bot.sdk.sendPrivateMessage(data.user_id, adaptSendableForSDK(msg)), msg)
+    return this.trackSend(data, this.sendMsg(data, msg => data.bot.sdk.sendPrivateMessage(data.user_id, adaptSendableForSDK(msg)), msg))
   }
 
   sendGroupMsg(data, msg, active = false) {
@@ -246,7 +253,7 @@ export default class MessageSender extends MessageTransport {
       ...(active ? { active: true } : {}),
       _mediaTarget: { target_type: "group", target_id: data.group_id },
     }
-    return this.sendMsg(data, msg => data.bot.sdk.sendGroupMessage(data.group_id, adaptSendableForSDK(msg)), msg)
+    return this.trackSend(data, this.sendMsg(data, msg => data.bot.sdk.sendGroupMessage(data.group_id, adaptSendableForSDK(msg)), msg))
   }
 
   async makeGuildMsg(data, msg, nested) {
@@ -415,11 +422,11 @@ export default class MessageSender extends MessageTransport {
         ...dms,
       })
     }
-    return this.sendGMsg(data, msg => data.bot.sdk.sendDirectMessage(data.guild_id, adaptSendableForSDK(msg)), msg)
+    return this.trackSend(data, this.sendGMsg(data, msg => data.bot.sdk.sendDirectMessage(data.guild_id, adaptSendableForSDK(msg)), msg))
   }
 
   sendGuildMsg(data, msg) {
-    return this.sendGMsg(data, msg => data.bot.sdk.sendGuildMessage(data.channel_id, adaptSendableForSDK(msg)), msg)
+    return this.trackSend(data, this.sendGMsg(data, msg => data.bot.sdk.sendGuildMessage(data.channel_id, adaptSendableForSDK(msg)), msg))
   }
 
   async recallMsg(data, recall, message_id) {

@@ -2,8 +2,22 @@ import { dispatch, getMap, log } from "../lib/utils/common.js"
 import BotApi from "./bot-api.js"
 import { isAtSelf, receivedMessageText } from "./message/received.js"
 import { mapKey, memberInfo, unixTime } from "./compat.js"
+import { config } from "../lib/utils/cfg.js"
 
 export default class AdapterEvents extends BotApi {
+  async ensureGroupState(id, group_id) {
+    if (config.refreshGroupState === false || typeof Bot[id]?.sdk?.getGroupBotState !== "function") return
+    this.groupStateChecks ||= new Map()
+    const key = `${id}:${group_id}`, bot = Bot[id], previous = this.groupStateChecks.get(key)
+    if (previous?.bot === bot && Date.now() - previous.time < 300000) return previous.pending
+    const check = { bot, time: Date.now() }
+    check.pending = this.getGroupBotState(id, group_id).catch(error => {
+      log("debug", ["读取机器人群角色失败", error?.message || String(error)], id)
+    })
+    this.groupStateChecks.set(key, check)
+    return check.pending
+  }
+
   async makeFriendMessage(data, event) {
     const user_id = `${data.self_id}${this.sep}${event.sender.user_id}`
     const cached = data.bot.fl.get(user_id)
@@ -58,6 +72,7 @@ export default class AdapterEvents extends BotApi {
         msg,
       )
     await this.setGroupMap(data)
+    await this.ensureGroupState(data.self_id, event.group_id)
   }
 
   async makeDirectMessage(data, event) {
@@ -106,6 +121,7 @@ export default class AdapterEvents extends BotApi {
       src_channel_id: event.channel_id,
     }
     data.group_id = `qg_${event.guild_id}-${event.channel_id}`
+    data.group_name = event.channel_name || data.bot.gl.get(data.group_id)?.group_name || data.group_id
     log(
       "info",
       `频道消息：[${data.group_id}, ${data.sender.nickname}(${data.user_id})] ${data.raw_message}`,
@@ -140,6 +156,7 @@ export default class AdapterEvents extends BotApi {
     await data.bot.gl.set(data.group_id, {
       ...data.bot.gl.get(data.group_id),
       group_id: data.group_id,
+      ...(data.guild_id !== undefined ? { guild_id: data.guild_id, channel_id: data.channel_id } : {}),
       ...(data.group_name ? { group_name: data.group_name, name: data.group_name } : {}),
       time: data.time,
       message_id: data.message_id,
@@ -164,6 +181,11 @@ export default class AdapterEvents extends BotApi {
       message_type: event.message_type,
       sub_type: event.sub_type,
       message_id: event.message_id,
+      guild_id: event.guild_id,
+      channel_id: event.channel_id,
+      src_guild_id: event.src_guild_id,
+      seq: event.seq,
+      rand: event.rand,
       source: event.source,
       time: Math.trunc(event.timestamp),
       get user_id() {
@@ -211,6 +233,7 @@ export default class AdapterEvents extends BotApi {
         return
     }
 
+    this.cacheMessage(data)
     return dispatch(`${data.post_type}.${data.message_type}.${data.sub_type}`, data)
   }
 
@@ -223,6 +246,7 @@ export default class AdapterEvents extends BotApi {
       message_id: `event_${event.notice_id}`,
       message_type: callback.group_id ? "group" : "private",
       sub_type: "callback",
+      time: unixTime(event.time) ?? Math.floor(Date.now() / 1000),
       get user_id() {
         return this.sender.user_id
       },
@@ -252,18 +276,22 @@ export default class AdapterEvents extends BotApi {
         if (Bot[id].callback[data.user_id]) return event.reply(3)
         Bot[id].callback[data.user_id] = true
 
-        let msg = `请先发送 #QQBot绑定用户${data.user_id}`
-        const real_id = callback.message.replace(/^#[Qq]+[Bb]ot绑定用户确认/, "").trim()
-        if (this.bind_user[real_id] === data.user_id) {
-          await Bot[id].fl.set(data.user_id, {
-            ...Bot[id].fl.get(data.user_id),
-            real_id,
-          })
-          msg = `绑定成功 ${data.user_id} → ${real_id}`
-        }
+        try {
+          let msg = `请先发送 #QQBot绑定用户${data.user_id}`
+          const real_id = callback.message.replace(/^#[Qq]+[Bb]ot绑定用户确认/, "").trim()
+          if (this.bind_user[real_id] === data.user_id) {
+            await Bot[id].fl.set(data.user_id, {
+              ...Bot[id].fl.get(data.user_id),
+              real_id,
+            })
+            msg = `绑定成功 ${data.user_id} → ${real_id}`
+          }
 
-        event.reply(0)
-        return data.group.sendMsg(msg)
+          await event.reply(0)
+          return await data.group.sendMsg(msg)
+        } finally {
+          delete Bot[id].callback[data.user_id]
+        }
       }
       log(
         "info",
@@ -290,7 +318,7 @@ export default class AdapterEvents extends BotApi {
     }
 
     event.reply(0)
-    dispatch(`${data.post_type}.${data.message_type}.${data.sub_type}`, data)
+    return dispatch(`${data.post_type}.${data.message_type}.${data.sub_type}`, data)
   }
 
   async makeCallback(id, event) {
@@ -361,7 +389,7 @@ export default class AdapterEvents extends BotApi {
         data.message.push({ type: "text", text: event.data?.resolved?.button_data })
         data.raw_message += event.data?.resolved?.button_data
       } else {
-        event.reply(1)
+        return event.reply(1)
       }
     }
     event.reply(0)
@@ -388,12 +416,21 @@ export default class AdapterEvents extends BotApi {
         await this.setGroupMap(data)
         break
       case "guild":
+        data.message_type = "group"
+        data.guild_id = event.guild_id
+        data.channel_id = event.channel_id
+        data.group_id = `qg_${event.guild_id}-${event.channel_id}`
+        data.sender = { user_id: `qg_${event.operator_id}`, src_guild_id: event.guild_id, src_channel_id: event.channel_id }
+        data.reply = (msg, quote, extra) => this.sendGuildMsg({ ...data, replyExtra: extra }, msg)
+        await this.setFriendMap(data)
+        await this.setGroupMap(data)
         break
       default:
         log("warn", ["未知按钮点击事件", event], data.self_id)
+        return
     }
 
-    dispatch(`${data.post_type}.${data.message_type}.${data.sub_type}`, data)
+    return dispatch(`${data.post_type}.${data.message_type}.${data.sub_type}`, data)
   }
 
   async makeNotice(id, event) {
@@ -407,8 +444,16 @@ export default class AdapterEvents extends BotApi {
       notice_type: event.notice_type,
       sub_type: event.sub_type,
       notice_id: event.notice_id,
-      time: event.time ?? unixTime(event.apply_at) ?? Math.floor(Date.now() / 1000),
+      time: unixTime(event.time) ?? unixTime(event.apply_at) ?? Math.floor(Date.now() / 1000),
       operator_id: event.operator_id === undefined ? undefined : `${id}${this.sep}${event.operator_id}`,
+    }
+    for (const key of ["guild_id", "channel_id", "guild_name", "channel_name", "channel_type", "message_id", "emoji", "thread_id", "post_id", "reply_id", "author_id", "title", "content", "type", "result", "roles", "is_bot"])
+      if (event[key] !== undefined) data[key] = event[key]
+    if (event.notice_type === "forum" && typeof event.message === "string") data.error_message = event.message
+    if (event._eventName?.startsWith("notice.reaction.")) data.notice_type = "reaction"
+    if (event.guild_id !== undefined) {
+      await this.makeGuildNotice(data, event)
+      return dispatch(`${data.post_type}.${data.notice_type}.${data.sub_type}`, data)
     }
     if (event.user_id !== undefined) data.user_id = `${id}${this.sep}${event.user_id}`
     if (event.group_id !== undefined) {
@@ -462,6 +507,59 @@ export default class AdapterEvents extends BotApi {
       }
     }
     return dispatch(`${data.post_type}.${data.request_type || data.notice_type}.${data.sub_type}`, data)
+  }
+
+  /** 频道事件使用频道用户 ID 和子频道场景，不能套用群 OpenID 的账号前缀。 */
+  async makeGuildNotice(data, event) {
+    const bot = data.bot, guildId = String(event.guild_id)
+    const guilds = bot.guilds ||= new Map()
+    const guildKey = `qg_${guildId}`, guildPrefix = `${guildKey}-`
+    const channelKeys = new Set([guildKey, ...[...bot.gl.keys(), ...bot.gml.keys()].filter(key =>
+      String(key).startsWith(guildPrefix) || String(bot.gl.get(key)?.guild_id) === guildId,
+    )])
+    if (event.operator_id !== undefined) data.operator_id = `qg_${event.operator_id}`
+    if (event.user_id !== undefined) data.user_id = `qg_${event.user_id}`
+    if (event.channel_id !== undefined) {
+      data.group_id = `${guildPrefix}${event.channel_id}`
+      data.group_name = event.channel_name || bot.gl.get(data.group_id)?.group_name || data.group_id
+    }
+
+    if (event.notice_type === "guild" && !event.sub_type?.startsWith("member.")) {
+      if (event.sub_type === "decrease") {
+        await guilds.delete(guildId)
+        for (const key of channelKeys) { await bot.gl.delete(key); await bot.gml.delete(key) }
+      } else if (["increase", "update"].includes(event.sub_type)) {
+        await guilds.set(guildId, { ...guilds.get(guildId), guild_id: guildId,
+          ...(event.guild_name ? { guild_name: event.guild_name, name: event.guild_name } : {}) })
+        if (event.guild_name)
+          for (const key of channelKeys) if (bot.gl.has(key))
+            await bot.gl.set(key, { ...bot.gl.get(key), guild_name: event.guild_name })
+      }
+    } else if (event.notice_type === "channel" && ["increase", "update", "decrease"].includes(event.sub_type) && data.group_id) {
+      if (event.sub_type === "decrease") { await bot.gl.delete(data.group_id); await bot.gml.delete(data.group_id) }
+      else await bot.gl.set(data.group_id, { ...bot.gl.get(data.group_id), group_id: data.group_id,
+        guild_id: guildId, channel_id: String(event.channel_id), channel_type: event.channel_type,
+        group_name: data.group_name, name: data.group_name, guild_name: guilds.get(guildId)?.guild_name })
+    } else if (event.notice_type === "guild" && event.sub_type?.startsWith("member.") && data.user_id) {
+      const cached = bot.fl.get(data.user_id)
+      const roles = Array.isArray(event.roles) ? event.roles.map(String) : undefined
+      const sender = { ...cached, user_id: data.user_id, src_guild_id: guildId,
+        ...(event.user_name ? { nickname: event.user_name } : {}),
+        ...(event.nick !== undefined ? { card: event.nick } : {}),
+        ...(event.avatar ? { avatar: event.avatar } : {}),
+        ...(roles ? { roles, role: roles.includes("4") ? "owner" : roles.some(role => ["2", "5"].includes(role)) ? "admin" : "member" } : {}),
+        ...(event.is_bot !== undefined ? { bot: event.is_bot } : {}) }
+      data.sender = sender
+      if (event.sub_type !== "member.decrease") await bot.fl.set(data.user_id, sender)
+      for (const key of channelKeys) {
+        let members = bot.gml.get(key)
+        if (event.sub_type === "member.decrease") await members?.delete(data.user_id)
+        else {
+          if (!members) { members = new Map(); await bot.gml.set(key, members) }
+          await members.set(data.user_id, { ...members.get(data.user_id), ...sender, group_id: key })
+        }
+      }
+    }
   }
 
   getFriendMap(id) {

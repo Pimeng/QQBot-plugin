@@ -16,6 +16,10 @@ toBotUpload: true
 hideGuildRecall: false
 # 图片压缩阈值（MB），0 表示不压缩（未安装 sharp 时自动关闭）
 imageLength: 3
+# 每个账号保留的最近接收消息总数（群聊、C2C 和频道共用），0 关闭；存入 data/QQBot/<id>/Message.json
+messageCacheSize: 1000
+# 收到群消息时按需刷新机器人群角色（5分钟内复用），使群管插件的 is_admin 判断可用
+refreshGroupState: true
 markdown:
   # markdown 模板 id（QQ 开放平台「模板」里配置的原始 id）
   template: abcdefghij

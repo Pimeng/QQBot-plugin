@@ -18,9 +18,9 @@ import {
   sharp,
   toBuffer,
 } from "../../lib/utils/common.js"
-import AdapterLifecycle from "../lifecycle.js"
+import AdapterHistory from "../history.js"
 
-export default class MessageMedia extends AdapterLifecycle {
+export default class MessageMedia extends AdapterHistory {
   async makeRecord(file) {
     const buffer = await toBuffer(file)
     if (!Buffer.isBuffer(buffer)) return file
