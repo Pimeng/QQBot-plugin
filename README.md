@@ -19,6 +19,7 @@ QQBot-Plugin 是面向 Elia-Yunzai 的 QQ 官方机器人适配器
 - 兼容全局 Bot、账号及好友/群/成员的常用调用，支持群成员禁言与频道管理
 - 可通过 `pickGroup(...).getChatHistory()` / `getMsg()` 查询实际接收的消息并持久保存
 - 接入 EliaAdminPanel 插件扩展，查看账号状态与本地统计，图形化编辑自定义菜单、指令面板和关联对象
+- 支持在 EliaAdminPanel 中通过二维码扫码绑定机器人并自动保存、重连账号
 
 ## 可用性
 

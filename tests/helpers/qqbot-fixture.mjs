@@ -23,7 +23,7 @@ export async function fixture(t, initial = {}, options = {}) {
   let watchChange
   let connections = 0
   const context = createContext({
-    Buffer, URL, AbortSignal, Map, Set, setTimeout, clearTimeout, fetch, console,
+    Buffer, URL, AbortSignal, AbortController, Map, Set, setTimeout, clearTimeout, fetch, console,
     Bot: {}, plugin: class {},
     logger: {
       warn: (...args) => warnings.push(args.join(" ")),

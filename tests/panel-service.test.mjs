@@ -158,6 +158,11 @@ test("QQBot 扩展：supportPanel 暴露真实服务，仍保留原配置表单"
   assert.equal(editor.mode, "singleton")
   const data = await editor.read({ selection: {} })
   assert.equal(data.options.accounts[0].value, "1001")
+  const login = page.tabs.find(tab => tab.id === "login")
+  assert.equal(login.blocks.join(","), "qrStart,qrImage,qrStatus,qrCancel")
+  const qrImage = page.blocks.find(block => block.id === "qrImage")
+  assert.equal(qrImage.type, "image")
+  assert.equal((await qrImage.read()).empty, "尚未创建扫码任务")
   assert.ok(!JSON.stringify(data).includes("test-secret"))
 })
 
