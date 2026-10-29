@@ -14,6 +14,7 @@ import { dispatch, markAdapterId } from "../lib/utils/events.js"
 import { GROUP_INTENTS, GUILD_MESSAGE_INTENTS, OPTIONAL_INTENTS } from "../lib/utils/message.js"
 import { sleep } from "../lib/utils/files.js"
 import { webhook } from "../lib/utils/webhook.js"
+import { Dau } from "../lib/dau.js"
 
 /** 账号监听拿到与全局 Bot 相同的 Yunzai 事件，SDK 的原始事件保持在 sdk 上。 */
 export function accountEvents(bot) {
@@ -180,6 +181,7 @@ export default class AdapterLifecycle {
       gl: contactMap(await this.getGroupMap(id), id, this.sep),
       gml: contactMap(await this.getMemberMap(id), id, this.sep, true),
       messageCache: await this.getMessageMap(id),
+      dau: await new Dau(id, { config }).init(),
 
       uploadImage: (file, opts) => this.uploadImage(id, file, opts),
       fileToUrl: (file, opts) => this.fileToUrl(id, file, opts),

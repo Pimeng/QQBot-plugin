@@ -49,7 +49,10 @@ test("QQBot 扩展：通过真实 SDK 菜单服务读写正确账号，不泄露
   const accounts = await f.service.read()
   assert.equal(accounts.accounts.length, 2)
   assert.equal(accounts.accounts[1].mode, "WebHook")
-  assert.deepEqual(f.service.summary(), { accounts: 2, online: 2, groups: 2, friends: 2, received: 24, sent: 16, cachedMessages: 2 })
+  assert.deepEqual(f.service.summary(), {
+    accounts: 2, online: 2, groups: 2, friends: 2, received: 24, sent: 16, cachedMessages: 2,
+    todayReceived: 0, todaySent: 0, dauUsers: 0, dauGroups: 0,
+  })
   assert.ok(!JSON.stringify(accounts).includes("private-"))
   assert.equal(f.calls.length, 0)
   const current = await f.service.read({ selection: select("menu", { account: "1002" }) })
@@ -146,7 +149,10 @@ test("QQBot 扩展：supportPanel 暴露真实服务，仍保留原配置表单"
   assert.equal(typeof support.configInfo.getConfigData, "function")
   assert.equal(support.panelExtensions.version, 1)
   const page = support.panelExtensions.pages.find(page => page.id === "qqbot")
-  assert.deepEqual(Object.keys(page.blocks[0].read()).sort(), ["accounts", "cachedMessages", "friends", "groups", "online", "received", "sent"])
+  assert.deepEqual(Object.keys(page.blocks[0].read()).sort(), [
+    "accounts", "cachedMessages", "dauGroups", "dauUsers", "friends", "groups", "online",
+    "received", "sent", "todayReceived", "todaySent",
+  ])
   const editor = page.blocks.find(block => block.id === "menu")
   assert.equal(editor.type, "resource")
   assert.equal(editor.mode, "singleton")

@@ -308,9 +308,53 @@ SDK 的媒体分片上传在平台分片序号从 1 开始时需要归一化偏�
 | `#QQBotMD` | 设置 Markdown/按钮/普通消息模式 |
 | `#QQBot发送模式` | 查询或设置 `auto`、`markdown`、`text` |
 | `#QQBot图片限制` | 设置图片压缩阈值（MB） |
+| `#QQBotDAU[机器人标识]` | 查看今日、昨日和最近 30 天平均 DAU；省略标识时使用当前账号 |
+| `#QQBot用户统计[机器人标识]` | 查看累计已见联系人、今日新增和昨日到今日的用户重合情况 |
 | `#QQBot绑定用户` | 将平台用户绑定到 QQ 号 |
 
 设置类命令受 `permission` 配置控制。账号使用的官方 `user_id` 可能是 OpenID，无法与 QQ 号直接对应时，可使用绑定命令或在 `master` 中添加额外主人。
+
+## DAU、通知事件与 C2C 扩展
+
+`dau.enabled` 默认开启，每个账号的统计独立写入 `data/QQBot/<id>/DAU.json`。上行量按真实消息和 `message_id + seq` 短期去重，下行量按实际成功回执计数；用户和群日活按账号、自然日及裸 OpenID 去重。按钮模拟消息不计为上行。每日记录默认保留 62 天，`dau.retentionDays` 可设为 2 至 3650；日切和清理由读取/写入操作触发，不依赖后台定时任务。存储失败只记录警告，不影响消息收发。
+
+普通成员入退群与机器人自身入退群使用不同指标，不把成员人数变化当作群数变化。`#QQBot用户统计` 的“累计已见”来自持久化索引，不代表 QQ 平台完整好友或群列表；离线账号可读取已有 DAU 文件。
+
+### 通知事件与插件欢迎
+
+普通成员入群规范化为 icqq 的 `notice.group.increase`，成员退群为 `notice.group.decrease`，机器人自身入退群也使用相同事件名但通过 `user_id` 区分。适配器不主动发送欢迎模板，插件捕获事件后自行决定推送内容：
+
+```js
+export class newcomer extends plugin {
+  constructor() {
+    super({ name: "欢迎新人", dsc: "新人入群欢迎", event: "notice.group.increase", priority: 5000 })
+  }
+
+  async accept() {
+    if (this.e.user_id === this.e.bot.uin) return
+    await this.e.group.sendMsg([segment.at(this.e.user_id), "欢迎新人！"])
+  }
+}
+```
+
+`FRIEND_ADD`、`GROUP_ADD_ROBOT`、`C2C_MSG_RECEIVE`、`GROUP_MSG_RECEIVE` 的通知保留 `event_id` 并提供对应 `reply()` 被动回复。普通 `GROUP_MEMBER_ADD` 不使用伪造的被动上下文，插件通过 `e.group.sendMsg()` 主动发送。
+
+### C2C 流式输出
+
+`stream: true` 时，所有可由流式 API 表达的 C2C 文本和 Markdown 消息使用 `sendPrivateStream()`；其他消息保持普通发送。也可只对单条消息显式添加 stream 段，无需开启全局开关：
+
+```js
+await e.reply([
+  { type: "stream", data: { inputMode: "replace", contentType: "text", chunkSize: 2, delay: 100 } },
+  "正在生成的回复内容",
+])
+```
+
+`inputMode` 支持 `replace`（每次发送当前全文前缀）和 `append`（增量分片），默认 `replace`；`contentType` 支持 `text/markdown`。群聊、频道、媒体、按钮和空内容不进入流式 API。SDK 流式发送失败时移除标记并回退普通消息，回执和 DAU 仍按实际结果统计。
+
+### 插件处理时的输入状态
+
+`inputNotify: true` 且收到 C2C 好友消息时，只有插件的 `accept`、上下文方法或命中的规则方法实际执行，才发送一次 `msg_type=6` 输入状态。插件仅被构造、规则未命中、权限被拒绝或完全没有插件处理时不发送。`inputNotifySeconds` 默认 30，可配置 1–60 秒；发送异步执行，不阻塞插件，失败仅记录 debug。QQ 群和频道私信不使用该能力。
 
 ## 常见问题
 

@@ -16,6 +16,23 @@ function messageSender(event, userId, cached) {
 }
 
 export default class AdapterEvents extends BotApi {
+  async sendInputNotify(data) {
+    if (config.inputNotify !== true || data.message_type !== "private" || data.sub_type !== "friend" || !data.message_id) return false
+    const configured = Number(config.inputNotifySeconds ?? 30)
+    const seconds = Number.isFinite(configured) ? Math.min(60, Math.max(1, Math.trunc(configured))) : 30
+    try {
+      await data.bot.sdk.request.post(`/v2/users/${data.user_id}/messages`, {
+        msg_type: 6,
+        input_notify: { input_type: 1, input_second: seconds },
+        msg_id: data.message_id,
+      })
+      return true
+    } catch (error) {
+      qblog.debug(`[${data.self_id}] 输入状态发送失败`, error?.message || error)
+      return false
+    }
+  }
+
   async ensureGroupState(id, group_id) {
     if (config.refreshGroupState === false || typeof Bot[id]?.sdk?.getGroupBotState !== "function") return
     this.groupStateChecks ||= new Map()
@@ -385,6 +402,7 @@ export default class AdapterEvents extends BotApi {
       notice_type: event.notice_type,
       sub_type: event.sub_type,
       notice_id: event.notice_id,
+      event_id: event.event_id,
       time: unixTime(event.time) ?? unixTime(event.apply_at) ?? Math.floor(Date.now() / 1000),
       operator_id: event.operator_id === undefined ? undefined : `${id}${this.sep}${event.operator_id}`,
     }
@@ -409,6 +427,15 @@ export default class AdapterEvents extends BotApi {
 
     if (event.notice_type === "friend") await this.makeFriendNotice(data, event)
     else if (event.notice_type === "group" && event.group_id) await this.makeGroupNotice(data, event)
+
+    if (event.event_id && ["increase", "receive_open"].includes(event.sub_type)) {
+      const context = { ...data, message_id: `event_${event.event_id}` }
+      if (event.notice_type === "friend" && event.user_id) {
+        data.reply = (msg, quote, extra) => this.sendFriendMsg({ ...context, user_id: event.user_id, replyExtra: extra }, msg)
+      } else if (event.notice_type === "group" && event.group_id) {
+        data.reply = (msg, quote, extra) => this.sendGroupMsg({ ...context, group_id: event.group_id, replyExtra: extra }, msg)
+      }
+    }
     return dispatch(`${data.post_type}.${data.request_type || data.notice_type}.${data.sub_type}`, data)
   }
 
@@ -431,6 +458,7 @@ export default class AdapterEvents extends BotApi {
     if (event.sub_type === "increase" || event.sub_type === "decrease") {
       // 机器人进退群的 user_id 指机器人；操作人独立放在 operator_id。
       data.user_id = `${data.self_id}${this.sep}${data.self_id}`
+      bot.dau?.recordGroupEvent(event.sub_type, data)
       if (event.sub_type === "decrease") {
         await bot.gl.delete(groupKey)
         await bot.gml.delete(memberKey)
@@ -466,6 +494,7 @@ export default class AdapterEvents extends BotApi {
 
   async makeGroupMemberNotice(data, event, groupKey) {
     data.sub_type = event.sub_type.slice("member.".length)
+    data.bot.dau?.recordGroupEvent(event.sub_type, data)
     const members = await this.getGroupMembers(data.bot, groupKey)
     const userKey = mapKey(members, event.user_id, data.self_id, this.sep)
     data.sender = members.get(userKey)

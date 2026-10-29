@@ -18,6 +18,10 @@ hideGuildRecall: false
 imageLength: 3
 # 每个账号保留的最近接收消息总数（群聊、C2C 和频道共用），0 关闭；存入 data/QQBot/<id>/Message.json
 messageCacheSize: 1000
+# DAU 日统计；按账号存入 data/QQBot/<id>/DAU.json，保留天数最少为 2 天
+dau:
+  enabled: true
+  retentionDays: 62
 # 收到群消息时按需刷新机器人群角色（5分钟内复用），使群管插件的 is_admin 判断可用
 refreshGroupState: true
 markdown:
@@ -28,6 +32,11 @@ markdown:
 # 也可按机器人 QQ 号覆盖：sendMode: { default: auto, "3889013403": markdown }
 sendMode:
   default: auto
+# C2C 文本/Markdown 是否默认使用流式输出；单条消息也可用 stream 段显式启用
+stream: false
+# 实际有插件方法处理 C2C 消息时显示“输入中”，持续秒数限制为 1-60
+inputNotify: false
+inputNotifySeconds: 30
 bot:
   # 是否使用沙箱环境（sandbox.api.sgroup.qq.com）
   sandbox: false

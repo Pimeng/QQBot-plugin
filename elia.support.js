@@ -205,6 +205,13 @@ function readSettings() {
     hideGuildRecall: config.hideGuildRecall === true,
     escapeMarkdown: config.escapeMarkdown !== false,
     imageLength: Number(config.imageLength ?? 3),
+    dau: {
+      enabled: config.dau?.enabled !== false,
+      retentionDays: Number(config.dau?.retentionDays ?? 62),
+    },
+    stream: config.stream === true,
+    inputNotify: config.inputNotify === true,
+    inputNotifySeconds: Number(config.inputNotifySeconds ?? 30),
     activeMsg: config.activeMsg === true ? "true" : config.activeMsg === false ? "false" : "auto",
     activeMsgGroups: Object.fromEntries(
       Object.entries(readObject(config.activeMsgGroups, {})).map(([key, value]) => [
@@ -351,6 +358,31 @@ export function supportPanel() {
           bottomHelpMessage: "0 表示不压缩；需要安装 sharp 才能压缩。",
           component: "InputNumber",
           componentProps: { min: 0, step: 0.1 },
+        },
+        { field: "dau.enabled", label: "启用 DAU 日统计", component: "Switch" },
+        {
+          field: "dau.retentionDays",
+          label: "DAU 每日记录保留天数",
+          component: "InputNumber",
+          componentProps: { min: 2, max: 3650, precision: 0 },
+        },
+        {
+          field: "stream",
+          label: "C2C 默认流式输出",
+          bottomHelpMessage: "仅文本/Markdown 单聊消息使用流式 API；其他消息保持普通发送。单条 stream 段无需开启此开关。",
+          component: "Switch",
+        },
+        {
+          field: "inputNotify",
+          label: "插件处理时显示输入中",
+          bottomHelpMessage: "仅 C2C；只有 accept、上下文或规则方法实际执行时发送一次，未命中不显示。",
+          component: "Switch",
+        },
+        {
+          field: "inputNotifySeconds",
+          label: "输入状态持续秒数",
+          component: "InputNumber",
+          componentProps: { min: 1, max: 60, precision: 0 },
         },
         {
           field: "activeMsg",
@@ -504,6 +536,22 @@ export function supportPanel() {
               "Markdown 转义",
             ),
             imageLength,
+            dau: {
+              ...readObject(config.dau, {}),
+              enabled: booleanValue(fieldValue(data, "dau.enabled") ?? before.dau.enabled, "DAU 开关"),
+              retentionDays: numberValue(
+                fieldValue(data, "dau.retentionDays") ?? before.dau.retentionDays,
+                "DAU 保留天数",
+                { integer: true, min: 2, max: 3650 },
+              ),
+            },
+            stream: booleanValue(fieldValue(data, "stream") ?? before.stream, "C2C 流式输出开关"),
+            inputNotify: booleanValue(fieldValue(data, "inputNotify") ?? before.inputNotify, "输入状态开关"),
+            inputNotifySeconds: numberValue(
+              fieldValue(data, "inputNotifySeconds") ?? before.inputNotifySeconds,
+              "输入状态持续秒数",
+              { integer: true, min: 1, max: 60 },
+            ),
             activeMsg: activeMsg === "auto" ? "auto" : activeMsg === "true",
             activeMsgGroups,
             sendMode,

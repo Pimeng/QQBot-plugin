@@ -38,6 +38,7 @@ export default class AdapterHistory extends AdapterLifecycle {
   cacheMessage(data) {
     if (!data.message_id || data.sub_type === "callback") return
     if (data.bot.stat) data.bot.stat.recv_msg_cnt = (data.bot.stat.recv_msg_cnt || 0) + 1
+    data.bot.dau?.recordReceive(data)
     const store = this.historyStore(data.self_id)
     if (!this.historyLimit()) return
     const snapshot = {}

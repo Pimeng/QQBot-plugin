@@ -17,6 +17,7 @@ import { sharp } from "../../lib/utils/files.js"
 import { qblog } from "../../lib/utils/logger.js"
 import MessageTransport from "./transport.js"
 import { sentResult } from "../compat.js"
+import { preparePrivateStream, privateStreamChunks } from "./stream.js"
 
 function hasSegment(messages, type) {
   return messages.some(message => Array.isArray(message) && message.some(segment => segment?.type === type))
@@ -25,8 +26,10 @@ function hasSegment(messages, type) {
 export default class MessageSender extends MessageTransport {
   async trackSend(data, pending) {
     const result = await pending
-    if (data.bot.stat && result?.data?.length)
-      data.bot.stat.sent_msg_cnt = (data.bot.stat.sent_msg_cnt || 0) + result.data.length
+    if (result?.data?.length) {
+      if (data.bot.stat) data.bot.stat.sent_msg_cnt = (data.bot.stat.sent_msg_cnt || 0) + result.data.length
+      data.bot.dau?.recordSend(result.data.length)
+    }
     return result
   }
 
@@ -235,6 +238,13 @@ export default class MessageSender extends MessageTransport {
     return sentResult(result)
   }
 
+  async sendPrivateStream(data, stream) {
+    const chunks = privateStreamChunks(stream.content, stream.chunkSize, stream.delay, stream.options.inputMode)
+    const ret = await data.bot.sdk.sendPrivateStream(data.user_id, chunks, stream.options)
+    if (Array.isArray(data._ret_id) && ret?.id) data._ret_id.push(ret.id)
+    return sentResult({ message_id: [], data: [ret], error: [] })
+  }
+
   /** active: true 表示主动推送（不带 msg_id），不属于回复；普通回复不要传 */
   sendFriendMsg(data, msg, active = false) {
     data = {
@@ -243,7 +253,14 @@ export default class MessageSender extends MessageTransport {
       _mediaTarget: { target_type: "user", target_id: data.user_id },
     }
     const send = message => data.bot.sdk.sendPrivateMessage(data.user_id, adaptSendableForSDK(message))
-    return this.trackSend(data, this.sendMsg(data, send, msg))
+    const stream = preparePrivateStream(data, msg)
+    const pending = stream
+      ? this.sendPrivateStream(data, stream).catch(error => {
+        qblog.warn(`[${data.self_id}] C2C 流式发送失败，改用普通消息`, error?.message || error)
+        return this.sendMsg(data, send, stream.message)
+      })
+      : this.sendMsg(data, send, msg)
+    return this.trackSend(data, pending)
   }
 
   sendGroupMsg(data, msg, active = false) {

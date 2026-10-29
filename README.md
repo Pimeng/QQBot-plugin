@@ -14,6 +14,8 @@ QQBot-Plugin 是面向 Elia-Yunzai 的 QQ 官方机器人适配器
 - 支持 WebSocket，或配置 WebHook 接收事件（推荐Websocket，官方已支持直接上传图片无需 WebHook）
 - 支持普通消息、Markdown、按钮、图片及常见媒体消息
 - 提供账号管理、发送模式、图片限制和用户绑定命令
+- 提供持久化 DAU、用户统计、C2C 流式输出和插件处理时的输入状态
+- 提供 icqq 风格成员/好友通知，插件可自行捕获入群事件并推送欢迎消息
 - 兼容全局 Bot、账号及好友/群/成员的常用调用，支持群成员禁言与频道管理
 - 可通过 `pickGroup(...).getChatHistory()` / `getMsg()` 查询实际接收的消息并持久保存
 - 接入 EliaAdminPanel 插件扩展，查看账号状态与本地统计，图形化编辑自定义菜单、指令面板和关联对象
@@ -78,7 +80,11 @@ accounts:
 | `#QQBotMD` | 设置 Markdown 消息模式 |
 | `#QQBot发送模式` | 查询或设置 `auto`、`markdown`、`text` |
 | `#QQBot图片限制` | 设置图片压缩阈值（MB） |
+| `#QQBotDAU[机器人标识]` | 查看今日、昨日和最近 30 天平均 DAU |
+| `#QQBot用户统计[机器人标识]` | 查看累计已见联系人、今日新增和用户留存 |
 | `#QQBot绑定用户` | 绑定 QQ 用户 |
+
+DAU 默认开启并按账号保存到 `data/QQBot/<id>/DAU.json`。普通成员入群使用 icqq 的 `notice.group.increase`，插件捕获后自行推送欢迎。`stream` 控制 C2C 文本/Markdown 默认流式输出，`inputNotify` 控制实际插件处理时显示输入中；统计口径、事件示例和 stream 段写法见[技术说明](docs/technical-details.md)。
 
 ## WebHook
 
