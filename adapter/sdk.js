@@ -273,7 +273,7 @@ export function createBot(opts = {}) {
         if (typeof payload?.bot === "boolean") parsed.is_bot = payload.bot
       }
     }
-    if (parsed && Number(type) === 103) parsed._qqbotMessageType = 103
+    if (parsed && Number.isFinite(Number(type))) parsed._qqbotMessageType = Number(type)
     return parsed
   }
 
@@ -374,7 +374,10 @@ export function normalizeEvent(event) {
     event.message = event.message.map(item => normalizeReceivedSegment(item, event.mentions))
 
   appendRichMessageText(event)
+  appendParallelMessage(event)
+  appendElementMessage(event)
   normalizeQuotedEvent(event)
+  appendVoiceTranscripts(event)
   if (Array.isArray(event.message)) event.raw_message = receivedMessageText(event.message)
 
   return event
@@ -436,6 +439,10 @@ function elementText(element, depth = 0) {
   if (typeof element.content === "string" && element.content.trim()) parts.push(element.content.trim())
   const card = richText(element.ark_data)
   if (card) parts.push(card)
+  for (const item of Array.isArray(element.attachments) ? element.attachments : []) {
+    if (typeof item?.asr_refer_text === "string" && item.asr_refer_text.trim())
+      parts.push(item.asr_refer_text.trim())
+  }
   for (const child of Array.isArray(element.msg_elements) ? element.msg_elements : []) {
     const text = elementText(child, depth + 1)
     if (text) parts.push(text)
@@ -456,6 +463,62 @@ function elementAttachments(element, output = [], depth = 0) {
   return output
 }
 
+/** 单个官方附件转成标准消息段；没有可下载地址时返回 undefined。 */
+function attachmentSegment(item) {
+  if (!item || typeof item !== "object") return undefined
+  const mime = String(item.content_type || "").toLowerCase()
+  const kind = mime === "voice" ? "audio" : mime.split("/")[0]
+  const type = kind === "audio" ? "record" : ["image", "video"].includes(kind) ? kind : "file"
+  let url = String(item.url ?? "")
+  if (url.startsWith("//")) url = `https:${url}`
+  // SDK 会把缺失地址补成 "https://"；无法下载的附件只保留摘要。
+  if (!/^https?:\/\//i.test(url)) return undefined
+  const name = item.filename || item.name
+  const segment = { ...item, type, url, file: url, ...(name ? { name } : {}) }
+  delete segment.content_type
+  delete segment.filename
+  return segment
+}
+
+/** 引用元素按顺序展开成可读文本和附件段。 */
+function elementSegments(element, depth = 0, output = []) {
+  if (!element || typeof element !== "object" || depth > 4) return output
+  const text = elementText(element)
+  if (text) output.push({ type: "text", text })
+  const attachments = elementAttachments(element)
+  for (const item of attachments) {
+    const segment = attachmentSegment(item)
+    if (segment) output.push(normalizeReceivedSegment(segment, []))
+  }
+  return output
+}
+
+/** 聊天记录元素展开成 icqq 风格的 node 段，并保留每个节点的作者。 */
+function chatRecordNodes(element, depth = 0) {
+  if (!element || typeof element !== "object" || depth > 4) return []
+  const children = Array.isArray(element.msg_elements) ? element.msg_elements : []
+  if (children.length)
+    return children.flatMap(child => {
+      const nested = chatRecordNodes(child, depth + 1)
+      if (nested.length) return nested
+      const node = singleChatRecordNode(child)
+      return node ? [node] : []
+    })
+  const node = singleChatRecordNode(element)
+  return node ? [node] : []
+}
+
+function singleChatRecordNode(element) {
+  const message = elementSegments(element)
+  if (!message.length) return undefined
+  const author = element.author && typeof element.author === "object" ? element.author : {}
+  return {
+    user_id: String(author.id || author.member_openid || author.user_openid || ""),
+    nickname: author.username || author.nickname || "",
+    message,
+  }
+}
+
 /**
  * 引用消息里的附件转换成消息段。
  *
@@ -472,22 +535,87 @@ function quotedAttachmentSegments(event, attachments) {
 
   const segments = []
   for (const item of attachments.slice(0, 10)) {
-    if (!item || typeof item !== "object") continue
-    const mime = String(item.content_type || "").toLowerCase()
-    const kind = mime.split("/")[0]
-    const type = kind === "audio" ? "record" : ["image", "video"].includes(kind) ? kind : "file"
-    let url = String(item.url ?? "")
-    if (url.startsWith("//")) url = `https:${url}`
-    // SDK 会把缺失地址补成 "https://"；无法下载的附件只保留摘要。
-    if (!/^https?:\/\//i.test(url) || seen.has(url)) continue
+    const segment = attachmentSegment(item)
+    if (!segment) continue
+    const url = segment.url
+    if (seen.has(url)) continue
     seen.add(url)
-    const name = item.filename || item.name
-    const segment = { ...item, type, url, file: url, ...(name ? { name } : {}) }
-    delete segment.content_type
-    delete segment.filename
     segments.push(normalizeReceivedSegment(segment, event.mentions))
   }
   return segments
+}
+
+/** 把 parallel_message.msg_nodes 转成标准消息段。 */
+function parallelMessageSegments(event) {
+  const nodes = event?.parallel_message?.msg_nodes
+  if (!Array.isArray(nodes)) return []
+  const seenText = new Set()
+  const seenUrl = new Set()
+  for (const segment of event.message || []) {
+    if (segment?.type === "text") seenText.add(String(segment.text || "").trim())
+    for (const value of [segment?.url, segment?.file])
+      if (typeof value === "string" && value) seenUrl.add(value)
+  }
+
+  const segments = []
+  for (const node of nodes.slice(0, 10)) {
+    if (!node || typeof node !== "object") continue
+    const attachments = elementAttachments(node)
+    const text = elementText(node)
+    if (text && !(attachments.length && /^\[(图片|视频|语音|文件|附件)\]$/.test(text)) && !seenText.has(text)) {
+      seenText.add(text)
+      segments.push({ type: "text", text })
+    }
+    for (const item of attachments) {
+      const segment = attachmentSegment(item)
+      if (!segment) continue
+      if (seenUrl.has(segment.url)) continue
+      seenUrl.add(segment.url)
+      segments.push(normalizeReceivedSegment(segment, event.mentions))
+    }
+  }
+  return segments
+}
+
+/** 普通消息里的并行消息直接追加；引用事件的并行内容只作为摘要来源。 */
+function appendParallelMessage(event) {
+  if (!Array.isArray(event.message)) return
+  const segments = parallelMessageSegments(event)
+  if (!segments.length) return
+  event.parallel_segments = segments
+  if (Number(event._qqbotMessageType ?? event.message_type) !== 103) event.message.push(...segments)
+}
+
+/** 顶层 101/102/3 等消息元素展开为文本、附件或聊天记录 node。 */
+function appendElementMessage(event) {
+  const elements = Array.isArray(event.msg_elements) ? event.msg_elements : []
+  if (!elements.length) return
+  const type = Number(event._qqbotMessageType ?? event.message_type)
+  if (type === 103 || !Array.isArray(event.message)) return
+  for (const element of elements) {
+    const nodes = type === 101 || type === 102 ? chatRecordNodes(element) : []
+    if (nodes.length) {
+      event.message.push(...nodes.map(data => ({ type: "node", data })))
+      continue
+    }
+    event.message.push(...elementSegments(element))
+  }
+}
+
+/** 语音 ASR 文本追加为正文段，保留原 record 段用于播放和下载。 */
+function appendVoiceTranscripts(event) {
+  if (!Array.isArray(event.message) || !event.message.length) return
+  const seen = new Set(event.message.filter(item => item?.type === "text")
+    .map(item => String(item.text || "").trim()).filter(Boolean))
+  // 原地插入，保留 event.message 的数组身份和已有消息段顺序。
+  for (let index = event.message.length - 1; index >= 0; index--) {
+    const item = event.message[index]
+    if (item?.type !== "record") continue
+    const text = typeof item.asr_refer_text === "string" ? item.asr_refer_text.trim() : ""
+    if (!text || seen.has(text)) continue
+    seen.add(text)
+    event.message.splice(index + 1, 0, { type: "text", text, _voiceText: true })
+  }
 }
 
 /** QQ 引用事件 103 将被引用内容放在 msg_elements[0]，SDK 1.3.0 未解析。 */
@@ -497,13 +625,25 @@ export function normalizeQuotedEvent(event) {
     ? event.msg_elements[0] : undefined
   if (!reference && !quoted) return event
   const nested = reference?.message || reference?.referenced_message || reference?.source_message
-  const content = [reference?.raw_message, reference?.content, elementText(nested), elementText(quoted)]
+  const parallelText = (event.parallel_segments || [])
+    .filter(item => item?.type === "text").map(item => item.text).join("\n")
+  const content = [reference?.raw_message, reference?.content, elementText(nested), elementText(quoted), parallelText]
     .find(value => typeof value === "string" && value.trim())
   const attachments = elementAttachments(nested, elementAttachments(quoted, elementAttachments(reference)))
-  const summary = content?.trim().slice(0, 500) || (Array.isArray(attachments) ? attachments.slice(0, 10).map(item => {
+  const attachmentSummary = attachments.slice(0, 10).map(item => {
     const mime = String(item?.content_type || "")
     return mime.startsWith("image") ? "[图片]" : mime.startsWith("audio") || mime === "voice" ? "[语音]" : mime.startsWith("video") ? "[视频]" : "[附件]"
-  }).join("") : "")
+  }).join("")
+  const parallelSummary = (event.parallel_segments || []).map(item => {
+    switch (item?.type) {
+      case "image": return "[图片]"
+      case "record": return "[语音]"
+      case "video": return "[视频]"
+      case "file": return "[附件]"
+      default: return ""
+    }
+  }).join("")
+  const summary = content?.trim().slice(0, 500) || attachmentSummary || parallelSummary
   // msg_idx 不是 OpenAPI 消息 ID；只在同一会话内用精确索引关联本地已收消息，
   // 不按文本相同猜测，也不会把索引伪装成 message_id。
   const messageId = reference?.message_id ?? reference?.id ?? quoted?.message_id ?? ""
@@ -513,6 +653,7 @@ export function normalizeQuotedEvent(event) {
     ...(summary ? { raw_message: summary } : {}),
     ...(quoted?.msg_idx ? { msg_idx: String(quoted.msg_idx).slice(0, 200) } : {}),
     ...(refIdx ? { ref_msg_idx: String(refIdx).slice(0, 200) } : {}),
+    ...(event.parallel_segments?.length ? { parallel_segments: event.parallel_segments } : {}),
   }
   for (const key of ["seq", "rand", "user_id", "time"])
     if (reference?.[key] !== undefined) event.source[key] = reference[key]
@@ -523,6 +664,9 @@ export function normalizeQuotedEvent(event) {
     if (author.union_openid) event.source.union_openid = author.union_openid
     if (author.union_user_account) event.source.union_user_account = author.union_user_account
   }
+  const quotedNodes = chatRecordNodes(quoted)
+  if (quotedNodes.length && (quotedNodes.length > 1 || Array.isArray(quoted?.msg_elements) || Number(quoted?.message_type) === 102))
+    event.source.nodes = quotedNodes
   if (!Array.isArray(event.message)) event.message = []
   const quotedSegments = quotedAttachmentSegments(event, attachments)
   if (!event.message.some(segment => segment?.type === "reply")) event.message.unshift({ type: "reply", id: event.source.message_id, ...(summary ? { text: summary } : {}) })

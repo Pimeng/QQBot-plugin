@@ -60,15 +60,19 @@ qblog.error(`[${id}] 消息处理失败`, error)
 | `<@OpenID>` / `<@!OpenID>` | `{ type: "at", qq: OpenID, text: "@昵称", is_you }`，保留正文顺序与多个 @ |
 | 全体成员 @ | `{ type: "at", qq: "all", text: "@全体成员" }` |
 | 图片附件 | `{ type: "image", url, file, ... }` |
-| 音频附件 | `{ type: "record", url, file, ... }` |
+| 音频附件（`content_type=audio/*` 或官方 `voice`） | `{ type: "record", url, file, voice_wav_url, asr_refer_text, ... }`；有 ASR 文本时紧随其后追加 `{ type: "text", text }` 正文段 |
 | 视频附件 | `{ type: "video", url, file, ... }` |
 | 文件附件及其他 MIME 附件 | `{ type: "file", name, size, file_size, fid, url, file, ... }` |
 | ARK 结构化卡片 | 正文使用平台已给的卡片摘要；`e.ark_data` 保留 `ark_type/prompt/fields` 等完整字段。纯卡片没有正文时补一段可读文字，避免空消息 |
 | 频道嵌入卡片 | `e.embeds` 保留原数组；纯嵌入没有正文时补标题或说明文字 |
+| `parallel_message.msg_nodes` | 普通消息转成 text/image/record/video/file 段追加到 `e.message`，同时保留 `e.parallel_segments`；引用事件只保留并行摘要，不重复追加到引用正文 |
+| 聊天记录 / 嵌套 `msg_elements`（101/102） | 转成 icqq 风格 `{ type: "node", data: { user_id, nickname, message } }`，每个节点保留自己的作者和消息段；引用事件中的节点放在 `e.source.nodes` |
 
-适配器关闭 SDK 默认的 @ 删除行为；兼容 Unicode 转义和 HTML 转义的 @ 占位符。`GROUP_AT_MESSAGE_CREATE` 即使正文未提供机器人占位符，也会恢复一个机器人 `at` 段并设置 `e.atBot = true`；已有机器人 @ 时不重复添加。`raw_message` 使用 `@昵称`、`[文件]`、`[图片]`、`[语音]` 等可读摘要，下载 URL 保留在消息段内。
+适配器关闭 SDK 默认的 @ 删除行为；兼容 Unicode 转义和 HTML 转义的 @ 占位符。`GROUP_AT_MESSAGE_CREATE` 即使正文未提供机器人占位符，也会恢复一个机器人 `at` 段并设置 `e.atBot = true`；已有机器人 @ 时不重复添加。`raw_message` 使用 `@昵称`、`[文件]`、`[图片]`、`[语音]`、`[聊天记录]` 等可读摘要，下载 URL 保留在消息段内。
 
 `message_scene.ext` 会解析为 `e.scene_ext`（不含 `auth_token`），其中 `msg_idx` / `ref_msg_idx` 同时提升为事件字段，菜单开关的 `switch_id` 等扩展也保留。如果被引用消息是机器人实际收到并留档的消息，适配器按同一会话内精确的 `ref_msg_idx` 关联，补齐 `e.source.message_id`、`e.source.message`、`e.reply_id`，`e.getReply()` 可直接读取被引用的文字、图片和文件；未收到原消息时仍退回引用摘要与附件段，不会把索引当作官方消息 ID 或按文本猜测。引用元素支持递归的 `msg_elements`，聊天记录、嵌套引用和卡片内的文字/附件都会参与摘要和图片段转换。
+
+同一账号在 5 分钟内收到 `post_type + message_type + message_id + msg_idx + 时间 + 正文` 完全相同的消息包时只投递一次，去重表跨账号重连保留并按最多 2000 条淘汰旧记录；同消息 ID 但正文、群名或作者信息变化时仍会继续投递。
 
 发送者会保留官方 `bot`、`union_openid`、`union_user_account` 字段；频道消息的 `member.roles` 会按官方数字角色换算为 `sender.role = "owner" | "admin" | "member"`，`e.member.is_admin/is_owner` 随之正确。
 
@@ -102,7 +106,7 @@ qblog.error(`[${id}] 消息处理失败`, error)
 | `peer.sendMsg(content, source)` | 独立联系人默认主动发送；显式传入可定位的 `source` 时保留该引用，不隐式引用上一条消息 |
 | `Bot.sendFriendMsg(botId, uid, content, source)` / `Bot[id].sendFriendMsg(uid, content, source)` | 兼容 phi 等插件的指定账号私聊快捷调用，分别保留全局与账号签名 |
 
-群主的 `member.is_admin` 与 icqq 一样为 `true`，`is_owner` 可独立判断群主；群对象的管理状态来自机器人自身的官方群角色。成员进退群、机器人进退群、好友增减和接收开关都会投递通知并更新相应缓存。成员通知需要订阅 `GROUP_MEMBER`；入群申请映射为 `request.group.add`，保留实际申请 `flag` 并提供 `approve(yes, reason, block)`。`MESSAGE_AUDIT` 的通过/驳回映射为 `notice.message_audit.pass` / `notice.message_audit.reject`，保留 `audit_id`、`audit_time`、`message_id` 和频道上下文。
+群主的 `member.is_admin` 与 icqq 一样为 `true`，`is_owner` 可独立判断群主；群对象的管理状态来自机器人自身的官方群角色。成员进退群、机器人进退群、好友增减和接收开关都会投递通知并更新相应缓存。成员通知需要订阅 `GROUP_MEMBER`；入群申请映射为 `request.group.add`，保留实际申请 `flag` 并提供 `approve(yes, reason, block)`。成员角色在 `admin` / `member` 之间变化时，额外投递 icqq 形状的 `notice.group.admin`（`sub_type="admin"`，`set=true/false`，并带 `previous_role/role`）；频道角色变化对应 `notice.guild.admin`。`MESSAGE_AUDIT` 的通过/驳回映射为 `notice.message_audit.pass` / `notice.message_audit.reject`，保留 `audit_id`、`audit_time`、`message_id` 和频道上下文。
 
 `refreshGroupState` 默认 `true`：收到群消息时按需读取官方机器人角色，五分钟内复用并合并并发请求，再将事件交给插件。这样群管插件在首条消息中读取 `group.is_admin/is_owner` 时可使用真实状态；查询失败不伪造管理员，五分钟后可重试。关闭此设置时可显式调用 `group.getBotState()` 或 `renew()` 刷新。
 
@@ -380,4 +384,4 @@ EliaAdminPanel 的“扫码登录”标签页通过 QQ 门户的 `/lite/create_b
 - **收不到群或用户消息**：检查 Yunzai 的 `whiteGroup`、`whiteQQ` 白名单是否包含对应群号或用户标识。
 - **Markdown 本地图片直链不可见**：先检查官方分片上传或 `raw_url` 错误。只有官方不可用时才需要核对回退服务的公网 `url`、WebHook 账号、`webhookPort` 和 `/QQBot/File/` 反向代理；端口未监听时会警告并尝试普通富媒体消息。
 
-QQBot 引用事件（类型 103）的原消息内容位于 msg_elements[0]。适配层保留该类型并转换为 reply 段与 source 摘要，正文独立展示；纯引用也显示引用卡片。被引用消息中的图片、语音、视频和文件附件会按类型补成对应消息段（image / record / video / file）放在引用段之后，图片理解等插件可直接读取其中的 `url`；无下载地址的附件只保留摘要。`msg_idx` 与 OpenAPI 消息 ID 是不同标识；只有同一会话内本地留档的 `ref_msg_idx` 精确命中时才补齐 `source.message_id` 和 `getReply()`，不按文本相同猜测跳转对象。缺少可定位消息 ID 时显示摘要并禁用跳转；旧缓存中已经丢失的内容无法恢复，只显示未提供内容提示。
+QQBot 引用事件（类型 103）的原消息内容位于 msg_elements[0]。适配层保留该类型并转换为 reply 段与 source 摘要，正文独立展示；纯引用也显示引用卡片。被引用消息中的图片、语音、视频和文件附件会按类型补成对应消息段（image / record / video / file）放在引用段之后，图片理解等插件可直接读取其中的 `url`；语音的 `asr_refer_text` 会补成正文段，无下载地址的附件只保留摘要。`msg_idx` 与 OpenAPI 消息 ID 是不同标识；只有同一会话内本地留档的 `ref_msg_idx` 精确命中时才补齐 `source.message_id` 和 `getReply()`，不按文本相同猜测跳转对象。缺少可定位消息 ID 时显示摘要并禁用跳转；旧缓存中已经丢失的内容无法恢复，只显示未提供内容提示。

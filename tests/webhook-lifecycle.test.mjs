@@ -129,13 +129,20 @@ test("引用元素递归读取聊天记录/卡片正文，引用发送者也进�
     msg_elements: [{
       message_type: 102, content: "",
       author: { id: "QUOTED_USER", username: "被引用者", union_openid: "UNION" },
-      msg_elements: [{ content: "第一行" }, { content: "第二行" }],
+      msg_elements: [
+        { content: "第一行", author: { id: "NODE_USER_1", username: "节点一" } },
+        { content: "第二行", author: { id: "NODE_USER_2", username: "节点二" } },
+      ],
     }],
   })
   assert.equal(e.source.raw_message, "第一行\n第二行")
   assert.equal(e.source.user_id, "QUOTED_USER")
   assert.equal(e.source.nickname, "被引用者")
   assert.equal(e.source.union_openid, "UNION")
+  assert.deepEqual(Array.from(e.source.nodes, node => [node.user_id, node.nickname, node.message[0].text]), [
+    ["NODE_USER_1", "节点一", "第一行"],
+    ["NODE_USER_2", "节点二", "第二行"],
+  ])
 
   const card = await f.receive("GROUP_AT_MESSAGE_CREATE", {
     ...incomingBase, id: "quoted-card", content: " ", message_type: 103,
@@ -206,6 +213,78 @@ test("消息事件补齐作者 bot/union 字段、频道数字角色与卡片/�
   })
   assert.equal(embed.embeds[0].title, "嵌入标题")
   assert.equal(embed.message[0].text, "嵌入说明")
+})
+
+
+test("重复消息包只投递一次，正文变化仍继续投递", async t => {
+  const f = await incomingFixture(t)
+  const payload = { ...incomingBase, id: "duplicate-packet", content: "重复正文" }
+  await f.receive("GROUP_MESSAGE_CREATE", { ...payload })
+  await f.receive("GROUP_MESSAGE_CREATE", { ...payload })
+  assert.equal(f.captured.filter(event => event.message_id === "duplicate-packet").length, 1)
+  await f.receive("GROUP_MESSAGE_CREATE", { ...payload, content: "更新正文" })
+  assert.equal(f.captured.filter(event => event.message_id === "duplicate-packet").length, 2)
+})
+
+test("parallel_message 的文本和附件转成消息段，引用事件里不重复追加", async t => {
+  const f = await incomingFixture(t)
+  const imageUrl = "https://example.com/parallel.png"
+  const e = await f.receive("GROUP_MESSAGE_CREATE", {
+    ...incomingBase, id: "parallel-message", content: "",
+    parallel_message: { msg_nodes: [
+      { content: "并行文字", message_type: 0 },
+      { content: "[图片]", message_type: 7, attachments: [{ content_type: "image/png", filename: "parallel.png", url: imageUrl }] },
+    ] },
+  })
+  assert.deepEqual(Array.from(e.message, item => item.type), ["text", "image"])
+  assert.equal(e.message[0].text, "并行文字")
+  assert.equal(e.message[1].url, imageUrl)
+  assert.equal(e.parallel_segments.length, 2)
+  assert.equal(e.raw_message, "并行文字[图片]")
+
+  const quote = await f.receive("GROUP_AT_MESSAGE_CREATE", {
+    ...incomingBase, id: "parallel-quote", content: " ", message_type: 103,
+    msg_elements: [{ content: "原文", msg_idx: "PARALLEL_REF" }],
+    parallel_message: { msg_nodes: [{ content: "并行摘要", message_type: 0 }] },
+  })
+  assert.deepEqual(Array.from(quote.message, item => item.type), ["reply", "at"])
+  assert.equal(quote.source.raw_message, "原文")
+  assert.equal(quote.parallel_segments[0].text, "并行摘要")
+})
+
+test("聊天记录节点保留作者，语音 ASR 补成正文段", async t => {
+  const f = await incomingFixture(t)
+  const record = await f.receive("GROUP_MESSAGE_CREATE", {
+    ...incomingBase, id: "chat-record", content: "", message_type: 102,
+    msg_elements: [{
+      message_type: 102,
+      msg_elements: [
+        { content: "第一条", author: { id: "NODE_USER_1", username: "节点一" } },
+        { content: "第二条", author: { id: "NODE_USER_2", username: "节点二" } },
+      ],
+    }],
+  })
+  assert.deepEqual(Array.from(record.message, item => item.type), ["node", "node"])
+  assert.deepEqual(Array.from(record.message, item => [item.data.user_id, item.data.nickname, item.data.message[0].text]), [
+    ["NODE_USER_1", "节点一", "第一条"],
+    ["NODE_USER_2", "节点二", "第二条"],
+  ])
+  assert.equal(record.raw_message, "[聊天记录][聊天记录]")
+
+  const voice = await f.receive("GROUP_MESSAGE_CREATE", {
+    ...incomingBase, id: "voice-message", content: "",
+    attachments: [{
+      content_type: "voice", url: "https://example.com/voice.silk",
+      voice_wav_url: "https://example.com/voice.wav", asr_refer_text: "今天天气怎么样", size: 1024,
+    }],
+  })
+  assert.deepEqual(Array.from(voice.message, item => item.type), ["record", "text"])
+  assert.equal(voice.message[0].url, "https://example.com/voice.silk")
+  assert.equal(voice.message[0].voice_wav_url, "https://example.com/voice.wav")
+  assert.equal(voice.message[0].asr_refer_text, "今天天气怎么样")
+  assert.equal(voice.message[1].text, "今天天气怎么样")
+  assert.equal(voice.raw_message, "[语音]今天天气怎么样")
+  assert.equal(voice.file, undefined)
 })
 
 

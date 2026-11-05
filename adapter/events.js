@@ -6,6 +6,13 @@ import { isAtSelf, receivedMessageSegments, receivedMessageText } from "./messag
 import { mapKey, memberInfo, unixTime } from "./compat.js"
 import { config } from "../lib/utils/cfg.js"
 
+/** 管理员角色只在 admin/member 之间变化时映射为 icqq 的 set/unset。 */
+function adminChange(previousRole, nextRole) {
+  if (!["admin", "member"].includes(previousRole) || !["admin", "member"].includes(nextRole)) return ""
+  if (previousRole === nextRole) return ""
+  return nextRole === "admin" ? "set" : "unset"
+}
+
 function messageSender(event, userId, cached) {
   return {
     ...cached,
@@ -168,6 +175,7 @@ export default class AdapterEvents extends BotApi {
   async makeMessage(id, event) {
     /** MESSAGE_AUDIT 与普通消息共用 SDK 的 message 根事件，但没有 message_type。 */
     if (event._eventName?.startsWith("message.audit")) return this.makeMessageAudit(id, event)
+    if (this.isDuplicateMessage(id, event)) return
     const data = {
       raw: event,
       bot: Bot[id],
@@ -186,6 +194,7 @@ export default class AdapterEvents extends BotApi {
       scene_ext: event.scene_ext,
       ...(event.ark_data ? { ark_data: event.ark_data } : {}),
       ...(Array.isArray(event.embeds) ? { embeds: event.embeds } : {}),
+      ...(event.parallel_segments?.length ? { parallel_segments: event.parallel_segments } : {}),
       source: event.source,
       time: Math.trunc(event.timestamp),
       get user_id() {
@@ -398,6 +407,37 @@ export default class AdapterEvents extends BotApi {
     return dispatch(`${data.post_type}.${data.message_type}.${data.sub_type}`, data)
   }
 
+  /**
+   * 官方网关可能重复推送同一个消息包。
+   *
+   * 用消息 ID、msg_idx、时间和可读正文区分：真正重复的包完全相同，
+   * 同 ID 但正文变化的消息仍会继续投递。同一个规范化事件对象被内部再次
+   * 交给 makeMessage 时（例如测试或手工重放）允许重新处理。
+   */
+  isDuplicateMessage(id, event) {
+    if (!Bot[id] || !event?.message_id) return false
+    this.seenMessageObjects ??= new WeakSet()
+    if (this.seenMessageObjects.has(event)) return false
+    this.seenMessageObjects.add(event)
+
+    /** 适配器实例跨账号重连保留去重表，避免重连后的重复推送再次触发插件。 */
+    const seen = this.seenMessages ??= new Map()
+    const key = [
+      id, event.post_type, event.message_type, event.message_id,
+      event.msg_idx ?? "", event.timestamp ?? event.time ?? "",
+      event.group_name ?? "", event.author?.username ?? "", event.author?.member_role ?? "",
+      event.content ?? "", event.raw_message ?? "",
+      (event.message || []).map(item => [item?.type, item?.url || item?.file || item?.text || ""].join(":")).join("|"),
+    ].join("\u0001")
+    const now = Date.now()
+    const previous = seen.get(key)
+    seen.set(key, now)
+    while (seen.size > 2000) seen.delete(seen.keys().next().value)
+    if (previous === undefined || now - previous >= 300000) return false
+    qblog.debug(`[${id}] 忽略重复消息包 ${event.message_id}`)
+    return true
+  }
+
   /** 频道消息审核结果：保留审核 ID、原消息和频道上下文。 */
   async makeMessageAudit(id, event) {
     const passed = event._eventName === "message.audit.pass" || event.is_passed === true
@@ -477,12 +517,27 @@ export default class AdapterEvents extends BotApi {
     await friends.set(key, friend)
   }
 
+  async emitAdminChange(data, change) {
+    if (!change?.adminChange) return
+    await dispatch("notice.group.admin", {
+      ...data,
+      sub_type: "admin",
+      set: change.adminChange === "set",
+      previous_role: change.previousRole,
+      role: change.nextRole,
+    })
+  }
+
   async makeGroupNotice(data, event) {
     const bot = data.bot
     const groupKey = mapKey(bot.gl, event.group_id, data.self_id, this.sep)
     const memberKey = mapKey(bot.gml, event.group_id, data.self_id, this.sep)
     if (event.sub_type === "join_request") return this.makeGroupJoinRequest(data, event)
-    if (event.sub_type.startsWith("member.")) return this.makeGroupMemberNotice(data, event, memberKey)
+    if (event.sub_type.startsWith("member.")) {
+      const change = await this.makeGroupMemberNotice(data, event, memberKey)
+      await this.emitAdminChange(data, change)
+      return change
+    }
 
     if (event.sub_type === "increase" || event.sub_type === "decrease") {
       // 机器人进退群的 user_id 指机器人；操作人独立放在 operator_id。
@@ -526,17 +581,20 @@ export default class AdapterEvents extends BotApi {
     data.bot.dau?.recordGroupEvent(event.sub_type, data)
     const members = await this.getGroupMembers(data.bot, groupKey)
     const userKey = mapKey(members, event.user_id, data.self_id, this.sep)
-    data.sender = members.get(userKey)
+    const previous = members.get(userKey)
+    data.sender = previous
     if (event.sub_type === "member.decrease") return members.delete(userKey)
 
-    const member = { ...members.get(userKey) }
+    const member = { ...previous }
     if (event.username) member.nickname = event.username
     if (event.member_role) member.member_role = event.member_role
     if (event.is_bot !== undefined) member.bot = event.is_bot
-    await members.set(userKey, {
-      ...memberInfo(member, event.user_id, event.group_id),
-      user_id: data.user_id,
-    })
+    const updated = { ...memberInfo(member, event.user_id, event.group_id), user_id: data.user_id }
+    await members.set(userKey, updated)
+    data.sender = updated
+    const previousRole = previous?.member_role || previous?.role
+    const nextRole = updated.member_role || updated.role
+    return { previousRole, nextRole, adminChange: adminChange(previousRole, nextRole) }
   }
 
   /** 频道事件使用频道用户 ID 和子频道场景，不能套用群 OpenID 的账号前缀。 */
@@ -560,7 +618,10 @@ export default class AdapterEvents extends BotApi {
     if (event.notice_type === "channel") return this.makeChannelNotice(data, event)
     if (event.notice_type !== "guild") return
     if (event.sub_type?.startsWith("member.")) {
-      if (data.user_id) await this.makeGuildMemberNotice(data, event, channelKeys)
+      if (data.user_id) {
+        const change = await this.makeGuildMemberNotice(data, event, channelKeys)
+        await this.emitAdminChange(data, change)
+      }
     } else {
       await this.makeGuildInfoNotice(data, event, channelKeys)
     }
@@ -611,7 +672,8 @@ export default class AdapterEvents extends BotApi {
 
   async makeGuildMemberNotice(data, event, channelKeys) {
     const bot = data.bot
-    const sender = { ...bot.fl.get(data.user_id), user_id: data.user_id, src_guild_id: String(event.guild_id) }
+    const previous = bot.fl.get(data.user_id)
+    const sender = { ...previous, user_id: data.user_id, src_guild_id: String(event.guild_id) }
     if (event.user_name) sender.nickname = event.user_name
     if (event.nick !== undefined) sender.card = event.nick
     if (event.avatar) sender.avatar = event.avatar
@@ -631,6 +693,9 @@ export default class AdapterEvents extends BotApi {
         await members.set(data.user_id, { ...members.get(data.user_id), ...sender, group_id: key })
       }
     }
+    const previousRole = previous?.role
+    const nextRole = sender.role ?? previousRole
+    return { previousRole, nextRole, adminChange: adminChange(previousRole, nextRole) }
   }
 
   getFriendMap(id) {

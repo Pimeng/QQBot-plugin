@@ -37,8 +37,9 @@ test("真实 SDK 频道和子频道通知保留字段，更新和退出仅清理
 
 test("频道成员变更使用 qg 用户 ID，同步频道根缓存和子频道缓存", async t => {
   const f = await incomingFixture(t)
-  const notices = []
+  const notices = [], admins = []
   f.bot.on("notice", event => notices.push(event))
+  f.bot.on("notice.guild.admin", event => admins.push(event))
   await f.notify("CHANNEL_CREATE", { id: channelId, guild_id: guildId, name: "子频道" })
   const payload = { guild_id: guildId, op_user_id: "OWNER", joined_at: timestamp,
     user: { id: "USER", username: "新成员", avatar: "https://example.com/avatar.png", bot: false }, roles: ["2"], nick: "成员名片" }
@@ -54,6 +55,13 @@ test("频道成员变更使用 qg 用户 ID，同步频道根缓存和子频道�
   await f.notify("GUILD_MEMBER_UPDATE", { ...payload, roles: ["1"], user: { ...payload.user, username: "更新昵称" } })
   assert.equal(member.nickname, "更新昵称")
   assert.equal(member.is_admin, false)
+  assert.equal(admins.length, 1)
+  assert.equal(admins[0].notice_type, "guild")
+  assert.equal(admins[0].sub_type, "admin")
+  assert.equal(admins[0].set, false)
+  assert.equal(admins[0].previous_role, "admin")
+  assert.equal(admins[0].role, "member")
+  assert.equal(admins[0].user_id, "qg_USER")
   await f.notify("GUILD_MEMBER_REMOVE", payload)
   assert.equal(f.account.gml.get(channelKey).has("qg_USER"), false)
   assert.equal(f.account.gml.get(`qg_${guildId}`).has("qg_USER"), false)

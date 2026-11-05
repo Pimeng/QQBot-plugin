@@ -43,7 +43,7 @@ export default class AdapterHistory extends AdapterLifecycle {
     if (!this.historyLimit()) return
     const snapshot = {}
     for (const key of ["self_id", "post_type", "message_type", "sub_type", "message_id", "seq", "rand",
-      "msg_idx", "ref_msg_idx", "scene_ext", "ark_data", "embeds",
+      "msg_idx", "ref_msg_idx", "scene_ext", "ark_data", "embeds", "parallel_segments",
       "time", "sender", "user_id", "group_id", "group_name", "target_id", "message", "source", "raw_message", "_at"])
       if (data[key] !== undefined) snapshot[key] = data[key]
     // 频道回复还需要原始频道/会话上下文，但不保留 SDK 的对象和函数。

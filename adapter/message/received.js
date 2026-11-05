@@ -15,10 +15,11 @@ export function prepareReceivedPayload(payload) {
   }
   const attachments = Array.isArray(payload.attachments) ? payload.attachments.map(item => {
     const mime = String(item.content_type || "file").toLowerCase()
-    const type = mime.split("/")[0]
+    // 官方语音使用 content_type=voice；SDK 按 MIME 首段决定段类型，补成 audio/voice 才会变成 record。
+    const type = mime === "voice" ? "audio" : mime.split("/")[0]
     let url = String(item.url ?? "")
     if (url.startsWith("//")) url = `https:${url}`
-    return { ...item, mime, url, content_type: ["image", "video", "audio"].includes(type) ? mime : "file" }
+    return { ...item, mime, url, content_type: ["image", "video", "audio"].includes(type) ? (mime === "voice" ? "audio/voice" : mime) : "file" }
   }) : undefined
   return { ...payload, author, mentions, content, ...(attachments ? { attachments } : {}) }
 }
@@ -97,6 +98,7 @@ export function receivedMessageText(message = []) {
       case "record": return "[语音]"
       case "video": return "[视频]"
       case "file": return "[文件]"
+      case "node": return "[聊天记录]"
       case "face": return `[表情:${item.id ?? ""}]`
       case "reply": return "[回复]"
       default: return `[${item?.type || "消息"}]`

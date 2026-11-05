@@ -37,6 +37,34 @@ test("普通成员入群投递 icqq 事件，由插件捕获后自行主动推�
   assert.equal(sent[0].message.map(item => item.data?.text).join(""), "@新成员欢迎")
 })
 
+test("群成员角色变更映射 icqq notice.group.admin 的 set/unset", async t => {
+  const f = await incomingFixture(t)
+  await f.notify("GROUP_MEMBER_ADD", memberPayload)
+  const admins = []
+  f.bot.on("notice.group.admin", event => admins.push(event))
+  const update = role => f.adapter.makeNotice(incomingSelf, {
+    post_type: "notice", notice_type: "group", sub_type: "member.update",
+    group_id: incomingGroup, user_id: "JOINED", username: "新成员",
+    member_role: role, timestamp: 1700000000000,
+  })
+  await update("admin")
+  assert.equal(admins.length, 1)
+  assert.equal(admins[0].notice_type, "group")
+  assert.equal(admins[0].sub_type, "admin")
+  assert.equal(admins[0].set, true)
+  assert.equal(admins[0].previous_role, "member")
+  assert.equal(admins[0].role, "admin")
+  assert.equal(admins[0].user_id, "JOINED")
+  assert.equal(admins[0].group_id, incomingGroup)
+
+  await update("member")
+  assert.equal(admins.length, 2)
+  assert.equal(admins[1].sub_type, "admin")
+  assert.equal(admins[1].set, false)
+  assert.equal(admins[1].previous_role, "admin")
+  assert.equal(admins[1].role, "member")
+})
+
 test("机器人自身入群与成员入群分开，并为官方通知保留 event_id 被动回复", async t => {
   const f = await incomingFixture(t)
   const received = []
