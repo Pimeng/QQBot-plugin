@@ -366,6 +366,40 @@ export function normalizeEvent(event) {
   return event
 }
 
+/**
+ * 引用消息里的附件转换成消息段。
+ *
+ * 引用事件 103 的 msg_elements[0].attachments 不属于当前消息，SDK 不会解析，
+ * 因此这里按附件类型补成 image / record / video / file 段，让图片理解等插件
+ * 能直接拿到被引用图片的 URL。重复规范化时按 URL 去重。
+ */
+function quotedAttachmentSegments(event, attachments) {
+  if (!Array.isArray(attachments)) return []
+  const seen = new Set()
+  for (const segment of event.message || [])
+    for (const value of [segment?.url, segment?.file])
+      if (typeof value === "string" && value) seen.add(value)
+
+  const segments = []
+  for (const item of attachments.slice(0, 10)) {
+    if (!item || typeof item !== "object") continue
+    const mime = String(item.content_type || "").toLowerCase()
+    const kind = mime.split("/")[0]
+    const type = kind === "audio" ? "record" : ["image", "video"].includes(kind) ? kind : "file"
+    let url = String(item.url ?? "")
+    if (url.startsWith("//")) url = `https:${url}`
+    // SDK 会把缺失地址补成 "https://"；无法下载的附件只保留摘要。
+    if (!/^https?:\/\//i.test(url) || seen.has(url)) continue
+    seen.add(url)
+    const name = item.filename || item.name
+    const segment = { ...item, type, url, file: url, ...(name ? { name } : {}) }
+    delete segment.content_type
+    delete segment.filename
+    segments.push(normalizeReceivedSegment(segment, event.mentions))
+  }
+  return segments
+}
+
 /** QQ 引用事件 103 将被引用内容放在 msg_elements[0]，SDK 1.3.0 未解析。 */
 export function normalizeQuotedEvent(event) {
   const reference = event.message_reference || event.source
@@ -386,6 +420,12 @@ export function normalizeQuotedEvent(event) {
   for (const key of ["seq", "rand", "user_id", "time"])
     if (reference?.[key] !== undefined) event.source[key] = reference[key]
   if (!Array.isArray(event.message)) event.message = []
+  const quotedSegments = quotedAttachmentSegments(event, attachments)
   if (!event.message.some(segment => segment?.type === "reply")) event.message.unshift({ type: "reply", id: event.source.message_id, ...(summary ? { text: summary } : {}) })
+  if (quotedSegments.length) {
+    // 引用卡片之后、正文之前插入被引用消息的附件。
+    const replyIndex = event.message.findIndex(segment => segment?.type === "reply")
+    event.message.splice((replyIndex < 0 ? 0 : replyIndex) + 1, 0, ...quotedSegments)
+  }
   return event
 }

@@ -71,6 +71,31 @@ test("真实 SDK 引用事件 103 保留引用摘要，正文与引用分开，�
   assert.equal(ordinary.source, undefined)
 })
 
+test("引用事件 103 把被引用图片作为图片段传入，重复规范化不重复添加", async t => {
+  const f = await incomingFixture(t)
+  const imageUrl = "https://multimedia.nt.qq.com.cn/download?appid=1407&fileid=quoted-image&spec=0"
+  const e = await f.receive("GROUP_AT_MESSAGE_CREATE", {
+    ...incomingBase, content: " ", message_type: 103,
+    msg_elements: [{
+      content: "", message_type: 103,
+      attachments: [{ content_type: "image/png", filename: "quoted.png", width: 530, height: 159, size: 14317, url: imageUrl }],
+    }],
+  })
+  assert.deepEqual(e.message.map(item => item.type), ["reply", "at", "image"])
+  const image = e.message.find(item => item.type === "image")
+  assert.equal(image.url, imageUrl)
+  assert.equal(image.file, imageUrl)
+  assert.equal(image.name, "quoted.png")
+  assert.equal(image.width, 530)
+  assert.equal(e.source.raw_message, "[图片]")
+  assert.equal(e.raw_message, "[回复]@DemoBot[图片]")
+
+  const normalized = f.sdkModule.normalizeEvent(e.raw)
+  assert.deepEqual(normalized.message.map(item => item.type), ["reply", "image"])
+  await f.adapter.makeMessage(incomingSelf, normalized)
+  assert.deepEqual(f.captured.at(-1).message.map(item => item.type), ["reply", "at", "image"])
+})
+
 
 for (const sep of [":", ""]) test(`群 @ 机器人空正文补齐 at 段，兼容 ${sep} 实例分隔符且不重复`, async t => {
   const f = await incomingFixture(t, sep)
