@@ -346,24 +346,114 @@ export function normalizeEvent(event) {
     event.group_id = event.group_openid
   if (event.post_type === "notice") event.time = unixTime(event._qqbotTimestamp) ?? unixTime(event.time)
 
+  const scene = readSceneExt(event)
+  if (!event.msg_idx && scene.msg_idx) event.msg_idx = scene.msg_idx
+  if (!event.ref_msg_idx && scene.ref_msg_idx) event.ref_msg_idx = scene.ref_msg_idx
+  const { auth_token: _authToken, ...sceneExt } = scene
+  if (Object.keys(sceneExt).length) event.scene_ext = sceneExt
+
   const sender = event.sender
   if (sender && typeof sender === "object") {
     if (event.author?.member_role !== undefined && sender.member_role === undefined) sender.member_role = event.author.member_role
     if (!sender.nickname) sender.nickname = sender.user_name || event.author?.username || sender.user_id
     if (sender.card === undefined) sender.card = event.member?.nick || ""
-    const role = sender.member_role || sender.role || sender.permissions?.find(value => ["owner", "admin", "member"].includes(value))
-    if (["group", "guild"].includes(event.message_type))
-      sender.role = ["owner", "admin"].includes(role) ? role : "member"
+    const roles = Array.isArray(event.member?.roles) ? event.member.roles.map(String) : []
+    if (event.message_type === "guild" && roles.length) {
+      sender.roles = roles
+      sender.role = guildRole(roles)
+    } else {
+      const role = sender.member_role || sender.role || sender.permissions?.find(value => ["owner", "admin", "member"].includes(value))
+      if (["group", "guild"].includes(event.message_type))
+        sender.role = ["owner", "admin"].includes(role) ? role : "member"
+    }
+    applyAuthorFields(event, sender)
   }
   if (!event.user_name && sender?.nickname) event.user_name = sender.nickname
 
   if (Array.isArray(event.message))
     event.message = event.message.map(item => normalizeReceivedSegment(item, event.mentions))
 
+  appendRichMessageText(event)
   normalizeQuotedEvent(event)
   if (Array.isArray(event.message)) event.raw_message = receivedMessageText(event.message)
 
   return event
+}
+
+/** message_scene.ext 是 key=value 数组，这里只取引用和去重需要的索引。 */
+function readSceneExt(event) {
+  const out = {}
+  const ext = event?.message_scene?.ext
+  if (!Array.isArray(ext)) return out
+  for (const line of ext) {
+    if (typeof line !== "string") continue
+    const index = line.indexOf("=")
+    if (index <= 0) continue
+    out[line.slice(0, index)] = line.slice(index + 1)
+  }
+  return out
+}
+
+/** 频道成员角色使用官方数字角色组：4=频道主，2/5=管理员。 */
+function guildRole(roles) {
+  if (roles.includes("4")) return "owner"
+  if (roles.some(role => role === "2" || role === "5")) return "admin"
+  return "member"
+}
+
+/** 把 SDK sender 没带上的官方用户字段补进发送者缓存。 */
+function applyAuthorFields(event, sender) {
+  const author = event.author
+  if (!author || typeof author !== "object") return
+  for (const key of ["union_openid", "union_user_account"])
+    if (author[key] && sender[key] === undefined) sender[key] = author[key]
+  if (author.bot !== undefined) {
+    if (sender.bot === undefined) sender.bot = Boolean(author.bot)
+    if (sender.is_bot === undefined) sender.is_bot = Boolean(author.bot)
+  }
+}
+
+/** 卡片或频道嵌入内容没有正文时，补一段可读文字，避免消息为空。 */
+function appendRichMessageText(event) {
+  if (!Array.isArray(event.message) || receivedMessageText(event.message).trim()) return event
+  const text = [richText(event.ark_data), ...(Array.isArray(event.embeds) ? event.embeds.map(richText) : [])]
+    .find(value => value && value.trim())
+  if (text) event.message.push({ type: "text", text })
+  return event
+}
+
+function richText(value) {
+  if (!value || typeof value !== "object") return ""
+  const fields = value.fields && typeof value.fields === "object" ? value.fields : value
+  return [value.prompt, fields.title, fields.desc, fields.content]
+    .find(item => typeof item === "string" && item.trim())?.trim() || ""
+}
+
+/** 递归读取引用元素正文：103 引用、102 聊天记录和 3 卡片都可能嵌套。 */
+function elementText(element, depth = 0) {
+  if (!element || typeof element !== "object" || depth > 4) return ""
+  const parts = []
+  if (typeof element.content === "string" && element.content.trim()) parts.push(element.content.trim())
+  const card = richText(element.ark_data)
+  if (card) parts.push(card)
+  for (const child of Array.isArray(element.msg_elements) ? element.msg_elements : []) {
+    const text = elementText(child, depth + 1)
+    if (text) parts.push(text)
+  }
+  return parts.join("\n")
+}
+
+/** 递归收集引用元素里的附件，按 URL 去重，避免嵌套元素重复。 */
+function elementAttachments(element, output = [], depth = 0) {
+  if (!element || typeof element !== "object" || depth > 4) return output
+  for (const item of Array.isArray(element.attachments) ? element.attachments : []) {
+    if (!item || typeof item !== "object") continue
+    if (output.some(existing => existing === item || item.url && existing.url === item.url)) continue
+    output.push(item)
+  }
+  for (const child of Array.isArray(element.msg_elements) ? element.msg_elements : [])
+    elementAttachments(child, output, depth + 1)
+  return output
 }
 
 /**
@@ -407,18 +497,32 @@ export function normalizeQuotedEvent(event) {
     ? event.msg_elements[0] : undefined
   if (!reference && !quoted) return event
   const nested = reference?.message || reference?.referenced_message || reference?.source_message
-  const content = [reference?.raw_message, reference?.content, nested?.content, quoted?.content].find(value => typeof value === "string" && value.trim())
-  const attachments = nested?.attachments || quoted?.attachments
+  const content = [reference?.raw_message, reference?.content, elementText(nested), elementText(quoted)]
+    .find(value => typeof value === "string" && value.trim())
+  const attachments = elementAttachments(nested, elementAttachments(quoted, elementAttachments(reference)))
   const summary = content?.trim().slice(0, 500) || (Array.isArray(attachments) ? attachments.slice(0, 10).map(item => {
     const mime = String(item?.content_type || "")
-    return mime.startsWith("image/") ? "[图片]" : mime.startsWith("audio/") ? "[语音]" : mime.startsWith("video/") ? "[视频]" : "[附件]"
+    return mime.startsWith("image") ? "[图片]" : mime.startsWith("audio") || mime === "voice" ? "[语音]" : mime.startsWith("video") ? "[视频]" : "[附件]"
   }).join("") : "")
-  // msg_idx is a separate QQ index, not an OpenAPI message ID. Do not invent a
-  // message_id or match other messages merely by identical text.
+  // msg_idx 不是 OpenAPI 消息 ID；只在同一会话内用精确索引关联本地已收消息，
+  // 不按文本相同猜测，也不会把索引伪装成 message_id。
   const messageId = reference?.message_id ?? reference?.id ?? quoted?.message_id ?? ""
-  event.source = { message_id: typeof messageId === "string" ? messageId.slice(0, 200) : "", ...(summary ? { raw_message: summary } : {}) }
+  const refIdx = event.ref_msg_idx || quoted?.msg_idx
+  event.source = {
+    message_id: typeof messageId === "string" ? messageId.slice(0, 200) : "",
+    ...(summary ? { raw_message: summary } : {}),
+    ...(quoted?.msg_idx ? { msg_idx: String(quoted.msg_idx).slice(0, 200) } : {}),
+    ...(refIdx ? { ref_msg_idx: String(refIdx).slice(0, 200) } : {}),
+  }
   for (const key of ["seq", "rand", "user_id", "time"])
     if (reference?.[key] !== undefined) event.source[key] = reference[key]
+  const author = quoted?.author
+  if (author && typeof author === "object") {
+    if (author.id) event.source.user_id = String(author.id).slice(0, 200)
+    if (author.username) event.source.nickname = author.username
+    if (author.union_openid) event.source.union_openid = author.union_openid
+    if (author.union_user_account) event.source.union_user_account = author.union_user_account
+  }
   if (!Array.isArray(event.message)) event.message = []
   const quotedSegments = quotedAttachmentSegments(event, attachments)
   if (!event.message.some(segment => segment?.type === "reply")) event.message.unshift({ type: "reply", id: event.source.message_id, ...(summary ? { text: summary } : {}) })

@@ -166,6 +166,8 @@ export default class AdapterEvents extends BotApi {
   }
 
   async makeMessage(id, event) {
+    /** MESSAGE_AUDIT 与普通消息共用 SDK 的 message 根事件，但没有 message_type。 */
+    if (event._eventName?.startsWith("message.audit")) return this.makeMessageAudit(id, event)
     const data = {
       raw: event,
       bot: Bot[id],
@@ -179,6 +181,11 @@ export default class AdapterEvents extends BotApi {
       src_guild_id: event.src_guild_id,
       seq: event.seq,
       rand: event.rand,
+      msg_idx: event.msg_idx,
+      ref_msg_idx: event.ref_msg_idx,
+      scene_ext: event.scene_ext,
+      ...(event.ark_data ? { ark_data: event.ark_data } : {}),
+      ...(Array.isArray(event.embeds) ? { embeds: event.embeds } : {}),
       source: event.source,
       time: Math.trunc(event.timestamp),
       get user_id() {
@@ -389,6 +396,28 @@ export default class AdapterEvents extends BotApi {
     }
 
     return dispatch(`${data.post_type}.${data.message_type}.${data.sub_type}`, data)
+  }
+
+  /** 频道消息审核结果：保留审核 ID、原消息和频道上下文。 */
+  async makeMessageAudit(id, event) {
+    const passed = event._eventName === "message.audit.pass" || event.is_passed === true
+    const data = {
+      raw: event,
+      bot: Bot[id],
+      self_id: id,
+      post_type: "notice",
+      notice_type: "message_audit",
+      sub_type: passed ? "pass" : "reject",
+      notice_id: event.audit_id,
+      audit_id: event.audit_id,
+      audit_time: event.audit_time,
+      message_id: event.message_id,
+      guild_id: event.guild_id,
+      channel_id: event.channel_id,
+      is_passed: passed,
+      time: unixTime(event.audit_time) ?? unixTime(event.create_time) ?? Math.floor(Date.now() / 1000),
+    }
+    return dispatch(`notice.message_audit.${data.sub_type}`, data)
   }
 
   async makeNotice(id, event) {

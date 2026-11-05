@@ -43,6 +43,7 @@ export default class AdapterHistory extends AdapterLifecycle {
     if (!this.historyLimit()) return
     const snapshot = {}
     for (const key of ["self_id", "post_type", "message_type", "sub_type", "message_id", "seq", "rand",
+      "msg_idx", "ref_msg_idx", "scene_ext", "ark_data", "embeds",
       "time", "sender", "user_id", "group_id", "group_name", "target_id", "message", "source", "raw_message", "_at"])
       if (data[key] !== undefined) snapshot[key] = data[key]
     // 频道回复还需要原始频道/会话上下文，但不保留 SDK 的对象和函数。
@@ -80,12 +81,22 @@ export default class AdapterHistory extends AdapterLifecycle {
 
   messageSource(id, type, target, source) {
     if (!source) return source
-    const record = source.message_id && this.matchingHistory(id, type, target)
+    const records = this.matchingHistory(id, type, target)
+    // 1) 有真实消息 ID 时优先精确匹配；2) 引用事件 103 没有消息 ID，
+    //    用 message_scene.ext 的 ref_msg_idx 在同一会话内关联已收消息。
+    const record = source.message_id && records
       .findLast(item => String(item.message_id) === String(source.message_id))
+      || source.ref_msg_idx && records
+        .findLast(item => item.msg_idx !== undefined && String(item.msg_idx) === String(source.ref_msg_idx))
+      || source.msg_idx && records
+        .findLast(item => item.msg_idx !== undefined && String(item.msg_idx) === String(source.msg_idx))
     if (!record) return { ...source }
-    return { ...source, user_id: this.historyPeer(id, record.user_id), time: record.time,
+    return { ...source, message_id: record.message_id, user_id: this.historyPeer(id, record.user_id), time: record.time,
       ...(record.seq !== undefined ? { seq: record.seq } : {}),
       ...(record.rand !== undefined ? { rand: record.rand } : {}),
+      ...(record.sender ? { sender: copy(record.sender) } : {}),
+      ...(record.ark_data ? { ark_data: copy(record.ark_data) } : {}),
+      ...(Array.isArray(record.embeds) ? { embeds: copy(record.embeds) } : {}),
       message: copy(record.message), raw_message: record.raw_message }
   }
 

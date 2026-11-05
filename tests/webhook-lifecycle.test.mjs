@@ -96,6 +96,118 @@ test("引用事件 103 把被引用图片作为图片段传入，重复规范化
   assert.deepEqual(f.captured.at(-1).message.map(item => item.type), ["reply", "at", "image"])
 })
 
+test("引用事件 103 按 message_scene.ext 的 msg_idx 关联本地原消息，补齐 getReply", async t => {
+  const f = await incomingFixture(t)
+  const imageUrl = "https://multimedia.nt.qq.com.cn/download?appid=1407&fileid=indexed-original&spec=0"
+  const original = await f.receive("GROUP_MESSAGE_CREATE", {
+    ...incomingBase, id: "indexed-original", content: "带图原文",
+    message_scene: { ext: ["msg_idx=REF_ORIGINAL", "auth_token=token"] },
+    attachments: [{ content_type: "image/png", filename: "original.png", url: imageUrl, width: 100, height: 80, size: 12 }],
+  })
+  assert.equal(original.message_id, "indexed-original")
+
+  const quote = await f.receive("GROUP_AT_MESSAGE_CREATE", {
+    ...incomingBase, id: "indexed-quote", content: " ", message_type: 103,
+    msg_elements: [{ msg_idx: "REF_ORIGINAL", content: "带图原文", message_type: 0 }],
+    message_scene: { ext: ["ref_msg_idx=REF_ORIGINAL", "msg_idx=REF_QUOTE"] },
+  })
+  assert.equal(quote.source.message_id, "indexed-original")
+  assert.equal(quote.reply_id, "indexed-original")
+  assert.equal(quote.hasReply, true)
+  assert.equal(quote.message[0].id, "indexed-original")
+  assert.equal(quote.source.ref_msg_idx, "REF_ORIGINAL")
+  assert.deepEqual(Array.from(quote.source.message, item => item.type), ["text", "image"])
+  const replied = await quote.getReply()
+  assert.equal(replied.message_id, "indexed-original")
+  assert.equal(replied.message.find(item => item.type === "image").url, imageUrl)
+})
+
+test("引用元素递归读取聊天记录/卡片正文，引用发送者也进入 source", async t => {
+  const f = await incomingFixture(t)
+  const e = await f.receive("GROUP_AT_MESSAGE_CREATE", {
+    ...incomingBase, content: " ", message_type: 103,
+    msg_elements: [{
+      message_type: 102, content: "",
+      author: { id: "QUOTED_USER", username: "被引用者", union_openid: "UNION" },
+      msg_elements: [{ content: "第一行" }, { content: "第二行" }],
+    }],
+  })
+  assert.equal(e.source.raw_message, "第一行\n第二行")
+  assert.equal(e.source.user_id, "QUOTED_USER")
+  assert.equal(e.source.nickname, "被引用者")
+  assert.equal(e.source.union_openid, "UNION")
+
+  const card = await f.receive("GROUP_AT_MESSAGE_CREATE", {
+    ...incomingBase, id: "quoted-card", content: " ", message_type: 103,
+    msg_elements: [{ message_type: 3, content: "", ark_data: { prompt: "分享了一张图片", fields: { title: "标题" } } }],
+  })
+  assert.equal(card.source.raw_message, "分享了一张图片")
+})
+
+test("频道消息审核事件转为 notice.message_audit，保留审核与频道标识", async t => {
+  const f = await incomingFixture(t)
+  const audits = []
+  f.bot.on("notice.message_audit.pass", event => audits.push(event))
+  await f.receive("MESSAGE_AUDIT_PASS", {
+    audit_id: "AUDIT", message_id: "AUDITED_MESSAGE", guild_id: "GUILD", channel_id: "CHANNEL",
+    audit_time: incomingBase.timestamp, create_time: incomingBase.timestamp,
+  })
+  assert.equal(audits.length, 1)
+  assert.equal(audits[0].notice_type, "message_audit")
+  assert.equal(audits[0].sub_type, "pass")
+  assert.equal(audits[0].audit_id, "AUDIT")
+  assert.equal(audits[0].message_id, "AUDITED_MESSAGE")
+  assert.equal(audits[0].is_passed, true)
+  assert.equal(audits[0].guild_id, "GUILD")
+  assert.equal(audits[0].channel_id, "CHANNEL")
+})
+
+test("消息事件补齐作者 bot/union 字段、频道数字角色与卡片/嵌入内容", async t => {
+  const f = await incomingFixture(t)
+  const group = await f.receive("GROUP_MESSAGE_CREATE", {
+    ...incomingBase, id: "author-fields", content: "正文",
+    author: {
+      ...incomingBase.author, bot: true, union_openid: "UNION_OPENID",
+      union_user_account: "UNION_ACCOUNT", avatar: "https://example.com/avatar.png",
+    },
+    message_scene: { ext: ["msg_idx=REF_FIELDS", "auth_token=SECRET", "switch_id=1"] },
+  })
+  assert.equal(group.sender.bot, true)
+  assert.equal(group.sender.is_bot, true)
+  assert.equal(group.sender.union_openid, "UNION_OPENID")
+  assert.equal(group.sender.union_user_account, "UNION_ACCOUNT")
+  assert.equal(group.msg_idx, "REF_FIELDS")
+  assert.deepEqual({ ...group.scene_ext }, { msg_idx: "REF_FIELDS", switch_id: "1" })
+
+  const guildId = "GUILD", channelId = "CHANNEL"
+  await f.notify("CHANNEL_CREATE", { id: channelId, guild_id: guildId, name: "子频道" })
+  const channel = await f.receive("MESSAGE_CREATE", {
+    id: "channel-role", guild_id: guildId, channel_id: channelId, content: "频道正文", timestamp: incomingBase.timestamp,
+    author: { id: "CHANNEL_USER", username: "频道用户" },
+    member: { nick: "频道名片", roles: ["2"] },
+  })
+  assert.equal(channel.sender.role, "admin")
+  assert.equal(channel.sender.card, "频道名片")
+  assert.equal(channel.member.is_admin, true)
+
+  const ark = await f.receive("C2C_MESSAGE_CREATE", {
+    id: "ark-message", content: "", timestamp: incomingBase.timestamp, message_type: 3,
+    author: { id: incomingUser, user_openid: incomingUser, username: "" },
+    ark_data: { ark_type: "miniapp", ark_name: "小程序", prompt: "快来完成今日学习打卡", fields: { title: "每日打卡" } },
+  })
+  assert.equal(ark.ark_data.ark_type, "miniapp")
+  assert.equal(ark.message[0].text, "快来完成今日学习打卡")
+  assert.equal(ark.raw_message, "快来完成今日学习打卡")
+
+  const embed = await f.receive("MESSAGE_CREATE", {
+    id: "embed-message", guild_id: guildId, channel_id: channelId, content: "", timestamp: incomingBase.timestamp,
+    author: { id: "CHANNEL_USER", username: "频道用户" },
+    embeds: [{ title: "嵌入标题", prompt: "嵌入说明" }],
+  })
+  assert.equal(embed.embeds[0].title, "嵌入标题")
+  assert.equal(embed.message[0].text, "嵌入说明")
+})
+
 
 for (const sep of [":", ""]) test(`群 @ 机器人空正文补齐 at 段，兼容 ${sep} 实例分隔符且不重复`, async t => {
   const f = await incomingFixture(t, sep)
