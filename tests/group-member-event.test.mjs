@@ -19,6 +19,7 @@ test("普通成员入群投递 icqq 事件，由插件捕获后自行主动推�
   assert.equal(received.length, 1)
   const event = received[0]
   assert.equal(event.user_id, "JOINED")
+  assert.equal(event.member_openid, "JOINED")
   assert.equal(event.group_id, incomingGroup)
   assert.equal(event.member.nickname, "新成员")
   assert.equal(event.group.group_id, incomingGroup)
@@ -35,6 +36,25 @@ test("普通成员入群投递 icqq 事件，由插件捕获后自行主动推�
   assert.equal(sent[0].group, incomingGroup)
   assert.equal(sent[0].message.some(item => item.type === "reply"), false)
   assert.equal(sent[0].message.map(item => item.data?.text).join(""), "@新成员欢迎")
+})
+
+test("成员退群投递 notice.group.decrease，保留 member_openid/user_openid 并清理成员缓存", async t => {
+  const f = await incomingFixture(t)
+  await f.notify("GROUP_MEMBER_ADD", memberPayload)
+  const received = []
+  f.bot.on("notice.group.decrease", event => received.push(event))
+  await f.notify("GROUP_MEMBER_REMOVE", {
+    group_openid: incomingGroup, member_openid: "JOINED",
+    user_openid: "USER_OPENID", timestamp: 1700000000000,
+  })
+  assert.equal(received.length, 1)
+  const event = received[0]
+  assert.equal(event.sub_type, "decrease")
+  assert.equal(event.user_id, "JOINED")
+  assert.equal(event.member_openid, "JOINED")
+  assert.equal(event.user_openid, "USER_OPENID")
+  assert.equal(event.group_id, incomingGroup)
+  assert.equal((await f.account.getGroupMemberList(incomingGroup)).has("JOINED"), false)
 })
 
 test("群成员角色变更映射 icqq notice.group.admin 的 set/unset", async t => {

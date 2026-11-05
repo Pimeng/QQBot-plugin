@@ -49,7 +49,12 @@ export default class AdapterLifecycle {
     }
 
     push(wanted)
-    push(wanted.filter(i => !OPTIONAL_INTENTS.includes(i)))
+    /** 逐个摘掉可选 intent，尽量保留 INTERACTION 等已授权能力。 */
+    let current = [...wanted]
+    for (const optional of OPTIONAL_INTENTS.filter(item => wanted.includes(item))) {
+      current = current.filter(item => item !== optional)
+      push(current)
+    }
 
     if (!explicit && account.guild) {
       push([...GUILD_MESSAGE_INTENTS])
@@ -110,7 +115,7 @@ export default class AdapterLifecycle {
       `[${id}] intents 被拒绝（${lastError}），最后一次申请：${queue[queue.length - 1].list.join(" | ") || "（空）"}`,
       "4013/4014 说明其中有 intent 未被该机器人授权：请到 QQ 开放平台确认已开启对应能力，" +
         `或在 ${CFG_FILE} 的 intents 里只保留已授权的项。` +
-        "可用项：群消息 GROUP_AT_MESSAGE_CREATE、C2C_MESSAGE_CREATE；" +
+        "可用项：群消息 GROUP_AT_MESSAGE_CREATE、C2C_MESSAGE_CREATE、群成员 GROUP_MEMBER；" +
         "频道 GUILDS、GUILD_MESSAGES、PUBLIC_GUILD_MESSAGES、GUILD_MESSAGE_REACTIONS、DIRECT_MESSAGE、GUILD_MEMBERS；" +
         "按钮交互 INTERACTION；消息审核 MESSAGE_AUDIT（后两者需单独申请）",
     )

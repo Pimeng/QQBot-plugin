@@ -106,7 +106,7 @@ qblog.error(`[${id}] 消息处理失败`, error)
 | `peer.sendMsg(content, source)` | 独立联系人默认主动发送；显式传入可定位的 `source` 时保留该引用，不隐式引用上一条消息 |
 | `Bot.sendFriendMsg(botId, uid, content, source)` / `Bot[id].sendFriendMsg(uid, content, source)` | 兼容 phi 等插件的指定账号私聊快捷调用，分别保留全局与账号签名 |
 
-群主的 `member.is_admin` 与 icqq 一样为 `true`，`is_owner` 可独立判断群主；群对象的管理状态来自机器人自身的官方群角色。成员进退群、机器人进退群、好友增减和接收开关都会投递通知并更新相应缓存。成员通知需要订阅 `GROUP_MEMBER`；入群申请映射为 `request.group.add`，保留实际申请 `flag` 并提供 `approve(yes, reason, block)`。成员角色在 `admin` / `member` 之间变化时，额外投递 icqq 形状的 `notice.group.admin`（`sub_type="admin"`，`set=true/false`，并带 `previous_role/role`）；频道角色变化对应 `notice.guild.admin`。`MESSAGE_AUDIT` 的通过/驳回映射为 `notice.message_audit.pass` / `notice.message_audit.reject`，保留 `audit_id`、`audit_time`、`message_id` 和频道上下文。
+群主的 `member.is_admin` 与 icqq 一样为 `true`，`is_owner` 可独立判断群主；群对象的管理状态来自机器人自身的官方群角色。成员进退群、机器人进退群、好友增减和接收开关都会投递通知并更新相应缓存。成员通知需要订阅 `GROUP_MEMBER`，群聊账号现在默认申请；平台未授权时会自动降级摘掉。入群申请映射为 `request.group.add`，保留实际申请 `flag` 并提供 `approve(yes, reason, block)`。成员角色在 `admin` / `member` 之间变化时，额外投递 icqq 形状的 `notice.group.admin`（`sub_type="admin"`，`set=true/false`，并带 `previous_role/role`）；频道角色变化对应 `notice.guild.admin`。`MESSAGE_AUDIT` 的通过/驳回映射为 `notice.message_audit.pass` / `notice.message_audit.reject`，保留 `audit_id`、`audit_time`、`message_id` 和频道上下文。
 
 `refreshGroupState` 默认 `true`：收到群消息时按需读取官方机器人角色，五分钟内复用并合并并发请求，再将事件交给插件。这样群管插件在首条消息中读取 `group.is_admin/is_owner` 时可使用真实状态；查询失败不伪造管理员，五分钟后可重试。关闭此设置时可显式调用 `group.getBotState()` 或 `renew()` 刷新。
 
@@ -217,7 +217,7 @@ accounts:
 
 ## Intents 与连接
 
-`intents: []` 表示根据账号类型自动申请事件权限。群聊账号默认申请 `GROUP_AT_MESSAGE_CREATE`、`C2C_MESSAGE_CREATE` 和 `INTERACTION`；频道事件不会默认开启。只申请频道事件时，配置 `group: false` 和 `guild: true`。
+`intents: []` 表示根据账号类型自动申请事件权限。群聊账号默认申请 `GROUP_AT_MESSAGE_CREATE`、`C2C_MESSAGE_CREATE`、`GROUP_MEMBER` 和 `INTERACTION`；频道事件不会默认开启。`GROUP_MEMBER` 负责成员进退群事件，平台未授权时会作为可选 intent 自动摘掉重连，不影响群消息。只申请频道事件时，配置 `group: false` 和 `guild: true`。
 
 需要手动覆盖时，在 `intents` 中填写完整列表，例如：
 
@@ -225,6 +225,7 @@ accounts:
 intents:
   - GROUP_AT_MESSAGE_CREATE
   - C2C_MESSAGE_CREATE
+  - GROUP_MEMBER
   - INTERACTION
   - GUILDS
   - GUILD_MESSAGES
@@ -332,7 +333,7 @@ SDK 的媒体分片上传在平台分片序号从 1 开始时需要归一化偏�
 
 ### 通知事件与插件欢迎
 
-普通成员入群规范化为 icqq 的 `notice.group.increase`，成员退群为 `notice.group.decrease`，机器人自身入退群也使用相同事件名但通过 `user_id` 区分。适配器不主动发送欢迎模板，插件捕获事件后自行决定推送内容：
+普通成员入群规范化为 icqq 的 `notice.group.increase`，成员退群为 `notice.group.decrease`，机器人自身入退群也使用相同事件名但通过 `user_id` 区分。事件保留 `member_openid`；退群事件如果官方提供 `user_openid` 也会一并保留，操作人放在 `operator_id`，群名优先取缓存。官方成员加入事件只有时间戳、群 OpenID 和成员 OpenID，没有昵称和角色，适配器不会伪造这些字段。适配器不主动发送欢迎模板，插件捕获事件后自行决定推送内容：
 
 ```js
 export class newcomer extends plugin {

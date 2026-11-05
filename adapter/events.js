@@ -479,8 +479,14 @@ export default class AdapterEvents extends BotApi {
       "guild_id", "channel_id", "guild_name", "channel_name", "channel_type",
       "message_id", "emoji", "thread_id", "post_id", "reply_id", "author_id",
       "title", "content", "type", "result", "roles", "is_bot",
+      "member_openid", "user_openid", "invited_by", "join_request_id",
     ]) {
       if (event[key] !== undefined) data[key] = event[key]
+    }
+    // SDK 的群成员增减事件把原始 OpenID 收敛到 user_id（优先 member_openid），这里补回字段。
+    if (event.notice_type === "group" && event.sub_type?.startsWith("member.")) {
+      data.member_openid ??= event.user_id
+      data.user_openid ??= event.user_openid
     }
     if (event.notice_type === "forum" && typeof event.message === "string") data.error_message = event.message
     if (event._eventName?.startsWith("notice.reaction.")) data.notice_type = "reaction"

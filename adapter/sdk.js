@@ -266,7 +266,10 @@ export function createBot(opts = {}) {
       parsed._eventName = name
       if (name.startsWith("notice")) {
         parsed._qqbotTimestamp = payload?.timestamp
-        for (const key of ["username", "member_role", "guild_id", "channel_id", "roles", "nick"])
+        for (const key of [
+          "username", "member_role", "guild_id", "channel_id", "roles", "nick",
+          "member_openid", "user_openid", "invited_by", "group_name", "op_member_openid", "join_request_id",
+        ])
           if (parsed[key] === undefined && payload?.[key] !== undefined) parsed[key] = payload[key]
         if (!parsed.user_name && payload?.user?.username) parsed.user_name = payload.user.username
         if (payload?.user?.avatar) parsed.avatar = payload.user.avatar
