@@ -16,9 +16,15 @@ import SDK from "qq-official-bot"
 import process from "node:process"
 import { normalizeReceivedSegment, prepareReceivedPayload, receivedMessageText } from "./message/received.js"
 import { unixTime } from "./compat.js"
+import { createDiag, describeCloseCode, describeError, describeErrorHint } from "../lib/utils/diagnostics.js"
 
 export const SDK_NAME = "qq-official-bot"
 export const SDK_VERSION = "1.3.0"
+
+const log = createDiag("SDK")
+
+/** 这些接口成功时也值得记录：扫码后连不上基本都是这里的某一步出了问题 */
+const KEY_ENDPOINT = /getAppAccessToken|\/gateway\/bot|\/users\/@me|\/openapi\//
 
 export const { Bot, resolveGatewayEvent, getFileBase64, Intends, ReceiverMode } = SDK
 
@@ -191,6 +197,44 @@ export function flattenReceivedMessage(msg) {
 }
 
 /**
+ * 记录 SDK 的 HTTP 请求
+ *
+ * 只在关键接口成功时记 debug，失败时一律记错误（带 HTTP 状态、平台错误码、traceId），
+ * 这样「获取 access_token 失败 / 获取网关失败」不会再被吞成一句连接失败。
+ */
+function instrumentHttp(sdk) {
+  const client = sdk?.request
+  if (!client) return
+  for (const method of ["get", "post", "put", "patch", "delete"]) {
+    const original = client[method]
+    if (typeof original !== "function" || original.__qqbotDiag) continue
+    const bound = original.bind(client)
+    const wrapped = async (url, ...args) => {
+      const started = Date.now()
+      try {
+        const response = await bound(url, ...args)
+        if (KEY_ENDPOINT.test(String(url)))
+          log.debug(`HTTP ${method.toUpperCase()} ${url} 成功`, {
+            status: response?.status,
+            elapsedMs: Date.now() - started,
+          })
+        return response
+      } catch (error) {
+        log.error(`HTTP ${method.toUpperCase()} ${url} 失败`, describeError(error, {
+          method: method.toUpperCase(),
+          url: String(url),
+          elapsedMs: Date.now() - started,
+          hint: describeErrorHint(error),
+        }))
+        throw error
+      }
+    }
+    wrapped.__qqbotDiag = true
+    client[method] = wrapped
+  }
+}
+
+/**
  * 创建 SDK 实例
  *
  * opts 沿用我们原有配置：`{ appid, secret, intents, sandbox, timeout, maxRetry, retryDelay, connectTimeout }`
@@ -198,6 +242,27 @@ export function flattenReceivedMessage(msg) {
  * 注意：v1 时代的 Bot Token 已作废，取凭证只认 appid + secret
  * （POST /app/getAppAccessToken 换 access_token），所以这里不再透传 token。
  */
+/**
+ * 显式停止后禁止迟到的自动重连
+ *
+ * WebSocketReceiver.reconnect() 会先 sleep（默认 5 秒）再 connect()，而 SDK 的
+ * stop() 只关闭当前连接、不会取消这个定时器。扫码登录会先 logout 旧连接再建立新连接，
+ * 旧连接会在几秒后用旧 token/旧 session 再连一次网关，拿到 op 9「无效的会话」，
+ * 日志里看起来像新连接失败（还会消耗 session_start_limit）。
+ */
+function blockReconnectAfterStop(sdk) {
+  const receiver = sdk?.sessionManager?.receiver
+  if (!receiver || typeof receiver.connect !== "function") return
+  const original = receiver.connect.bind(receiver)
+  receiver.connect = async (...args) => {
+    if (receiver.session?.userClose) {
+      log.debug("SDK 已停止，忽略迟到的自动重连")
+      return
+    }
+    return original(...args)
+  }
+}
+
 export function createBot(opts = {}) {
   const config = {
     appid: opts.appid,
@@ -212,6 +277,17 @@ export function createBot(opts = {}) {
     removeAt: false,
   }
   if (opts.sandbox) config.apiBaseUrl = SANDBOX_API_BASE
+
+  log.debug("创建 SDK 实例", {
+    appid: config.appid,
+    secret: opts.secret ? `***（已隐藏，长度 ${String(opts.secret).length}）` : "（空）",
+    intents: config.intents,
+    mode: config.mode,
+    apiBaseUrl: config.apiBaseUrl || "默认（https://api.bot.qq.com）",
+    timeout: config.timeout,
+    maxRetry: config.maxRetry,
+    reconnectDelay: config.reconnectDelay,
+  })
 
   // SDK 在每次构造时添加全局异常监听器，只用于 debug 日志。账号重连和
   // intents 降级会反复构造实例，保留这些闭包会泄漏实例并重复记录宿主异常。
@@ -292,7 +368,19 @@ export function createBot(opts = {}) {
     if (payload && typeof payload === "object") payload._eventName = event
     return rawEm(event, payload)
   }
+  instrumentHttp(sdk)
+  blockReconnectAfterStop(sdk)
   return sdk
+}
+
+/** 只保留协议、域名和路径，避免把可能的查询参数令牌写进日志 */
+function endpointOf(url) {
+  try {
+    const parsed = new URL(String(url))
+    return `${parsed.protocol}//${parsed.host}${parsed.pathname}`
+  } catch {
+    return String(url || "")
+  }
 }
 
 /**
@@ -304,8 +392,12 @@ export function createBot(opts = {}) {
 export function login(sdk, timeoutMs = 30000) {
   return new Promise((resolve, reject) => {
     const receiver = sdk?.sessionManager?.receiver
-    if (!receiver) return reject(new Error("SDK receiver 未初始化"))
+    if (!receiver) {
+      log.error("SDK receiver 未初始化，无法建立连接")
+      return reject(new Error("SDK receiver 未初始化"))
+    }
 
+    const started = Date.now()
     let settled = false
     const done = (fn, arg) => {
       if (settled) return
@@ -313,21 +405,68 @@ export function login(sdk, timeoutMs = 30000) {
       clearTimeout(timer)
       receiver.off("ready", onReady)
       receiver.off("close", onClose)
+      receiver.off("error", onError)
       fn(arg)
     }
-    const onReady = () => done(resolve)
+    const onReady = () => {
+      const token = sdk.sessionManager?.access_token
+      log.info(`网关登录成功（${Date.now() - started}ms）`, {
+        tokenLength: token ? String(token).length : 0,
+        gateway: endpointOf(sdk.sessionManager?.wsUrl),
+        wsReadyState: receiver?.handler?.ws?.readyState,
+      })
+      done(resolve)
+    }
     const onClose = (code, reason) => {
+      const text = Buffer.isBuffer(reason) ? reason.toString() : String(reason ?? "")
+      const hint = describeCloseCode(code)
+      log.warn("网关连接关闭", {
+        code,
+        reason: text,
+        hint,
+        fatal: FATAL_CLOSE_CODES.includes(Number(code)),
+        elapsedMs: Date.now() - started,
+        ready: receiver?.isReady,
+      })
       if (FATAL_CLOSE_CODES.includes(Number(code)))
-        done(reject, new Error(`${code} ${reason || ""}`.trim()))
+        done(reject, new Error(`${code} ${text}`.trim()))
+    }
+    const onError = error => {
+      log.error("网关错误", describeError(error, {
+        elapsedMs: Date.now() - started,
+        hint: describeErrorHint(error),
+      }))
     }
 
+    log.info("开始网关登录", {
+      timeoutMs,
+      intents: sdk.config?.intents,
+      mode: sdk.config?.mode,
+      apiBaseUrl: sdk.config?.apiBaseUrl || "默认（https://api.bot.qq.com）",
+    })
+
     const timer = setTimeout(
-      () => done(reject, new Error(`连接超时（${timeoutMs}ms）`)),
+      () => {
+        log.error(`网关登录超时（${timeoutMs}ms）`, {
+          elapsedMs: Date.now() - started,
+          ready: receiver?.isReady,
+          wsReadyState: receiver?.handler?.ws?.readyState,
+          hint: "超时通常是网络无法连到 QQ 网关，或网关没有下发 READY",
+        })
+        done(reject, new Error(`连接超时（${timeoutMs}ms）`))
+      },
       timeoutMs,
     )
     receiver.on("ready", onReady)
     receiver.on("close", onClose)
-    sdk.start().catch(err => done(reject, err))
+    receiver.on("error", onError)
+    sdk.start().catch(err => {
+      log.error("SDK 启动失败", describeError(err, {
+        elapsedMs: Date.now() - started,
+        hint: describeErrorHint(err),
+      }))
+      done(reject, err)
+    })
   })
 }
 

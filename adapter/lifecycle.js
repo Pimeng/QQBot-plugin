@@ -12,9 +12,24 @@ import {
 } from "./sdk.js"
 import { dispatch, markAdapterId } from "../lib/utils/events.js"
 import { GROUP_INTENTS, GUILD_MESSAGE_INTENTS, OPTIONAL_INTENTS } from "../lib/utils/message.js"
+import {
+  accountDiag,
+  createDiag,
+  describeCloseCode,
+  describeError,
+  describeErrorHint,
+} from "../lib/utils/diagnostics.js"
 import { sleep } from "../lib/utils/files.js"
 import { webhook } from "../lib/utils/webhook.js"
 import { Dau } from "../lib/dau.js"
+
+const log = createDiag("连接")
+const PHASE_TEXT = {
+  webhook: "WebHook 初始化",
+  token: "获取 access_token",
+  login: "登录 / WebSocket 握手",
+  selfinfo: "获取机器人资料（/users/@me）",
+}
 
 /** 账号监听拿到与全局 Bot 相同的 Yunzai 事件，SDK 的原始事件保持在 sdk 上。 */
 export function accountEvents(bot) {
@@ -68,11 +83,14 @@ export default class AdapterLifecycle {
 
   /** 连接一个账号，intents 被拒绝时自动尝试更保守的组合。 */
   async connect(entry) {
+    this.connectErrors ||= {}
     const account = normalizeAccount(entry)
     const id = account.uin
+    log.info(`账号开始连接：${id}`, accountDiag(account))
     const restartNotice = webhook.restartNotice(account)
     if (restartNotice) {
       qblog.warn(`[${id}] ${restartNotice}`)
+      this.connectErrors[id] = { message: restartNotice, phase: "webhook", intents: [], at: Date.now() }
       return false
     }
     delete this.activeIntents[id]
@@ -80,18 +98,29 @@ export default class AdapterLifecycle {
     const explicit = Array.isArray(config.intents) && config.intents.length > 0
     const wanted = this.makeIntents(account)
     const queue = this.buildIntentQueue(account, explicit)
+    log.info(`[${id}] intents 规划完成`, {
+      explicit,
+      wanted,
+      combinations: queue.map(({ list }) => list),
+    })
 
     let lastError = null
     for (let i = 0; i < queue.length; i++) {
       const { list } = queue[i]
+      log.info(`[${id}] 第 ${i + 1}/${queue.length} 次连接尝试`, { intents: list })
       let ret
       try {
         ret = await this.connectOnce(id, account, list)
       } catch (err) {
         qblog.error(`[${id}] 账号初始化失败`, err)
+        log.error(`[${id}] 账号初始化异常`, describeError(err, { attempt: i + 1, intents: list }))
+        this.connectErrors[id] = {
+          message: err?.message || String(err), phase: "create", intents: list, at: Date.now(),
+        }
         return false
       }
       if (ret.ok) {
+        delete this.connectErrors[id]
         this.activeIntents[id] = [...list]
         if (Bot[id]?.info) Bot[id].info.intents = [...list]
         if (Bot[id]) Bot[id].interaction = list.includes("INTERACTION")
@@ -105,12 +134,41 @@ export default class AdapterLifecycle {
             `当前生效 intents：${list.join(" | ")}`,
           )
         else if (i > 0) qblog.warn(`[${id}] 已改用兜底 intents：${list.join(" | ")}`)
+        log.info(`[${id}] 连接成功`, {
+          intents: list,
+          dropped,
+          nickname: Bot[id]?.nickname || "",
+          online: Bot[id]?.online === true,
+          attempts: i + 1,
+        })
         return true
       }
-      if (!ret.intentError) return false
+      if (!ret.intentError) {
+        const message = ret.error || "未知错误"
+        const hint = ret.hint || describeErrorHint({ message })
+        this.connectErrors[id] = { message, phase: ret.phase || "login", intents: list, at: Date.now() }
+        log.error(`[${id}] 连接失败，不再重试`, {
+          phase: ret.phase || "login",
+          message,
+          intents: list,
+          hint,
+        })
+        return false
+      }
       lastError = ret.error
+      log.warn(`[${id}] intents 组合被平台拒绝，继续降级重试`, {
+        intents: list,
+        error: ret.error,
+        hint: describeErrorHint({ message: ret.error }),
+      })
     }
 
+    this.connectErrors[id] = {
+      message: String(lastError ?? "intents 全部被拒绝"),
+      phase: "intents",
+      intents: queue.at(-1)?.list || [],
+      at: Date.now(),
+    }
     qblog.error(
       `[${id}] intents 被拒绝（${lastError}），最后一次申请：${queue[queue.length - 1].list.join(" | ") || "（空）"}`,
       "4013/4014 说明其中有 intent 未被该机器人授权：请到 QQ 开放平台确认已开启对应能力，" +
@@ -119,7 +177,17 @@ export default class AdapterLifecycle {
         "频道 GUILDS、GUILD_MESSAGES、PUBLIC_GUILD_MESSAGES、GUILD_MESSAGE_REACTIONS、DIRECT_MESSAGE、GUILD_MEMBERS；" +
         "按钮交互 INTERACTION；消息审核 MESSAGE_AUDIT（后两者需单独申请）",
     )
+    log.error(`[${id}] 所有 intents 组合都被拒绝`, {
+      lastError,
+      attempts: queue.length,
+      attempted: queue.map(({ list }) => list),
+    })
     return false
+  }
+
+  /** 最近一次连接失败的信息，供扫码登录等调用方展示具体原因 */
+  lastConnectError(id) {
+    return this.connectErrors?.[id]
   }
 
   /** 单次连接尝试，intents 由 connect() 决定。 */
@@ -130,6 +198,19 @@ export default class AdapterLifecycle {
       secret: account.secret,
       intents,
     }
+    const startedAt = Date.now()
+    const connectTimeout = opts.connectTimeout || 30000
+    log.info(`[${id}] 创建连接`, {
+      ...accountDiag(account),
+      intents,
+      webhook: account.webhook === true,
+      sandbox: Boolean(config.bot?.sandbox),
+      apiBaseUrl: config.bot?.sandbox ? "https://sandbox.api.sgroup.qq.com" : "默认（https://api.bot.qq.com）",
+      requestTimeout: opts.timeout,
+      connectTimeout,
+      maxRetry: opts.maxRetry,
+      retryDelay: opts.retryDelay,
+    })
     qblog.info(`[${id}] 申请 intents：${intents.join(" | ") || "（空）"}`)
 
     Bot[id] = accountEvents({
@@ -206,25 +287,63 @@ export default class AdapterLifecycle {
     bot.sdk.on("message", handle("消息", this.makeMessage))
     bot.sdk.on("notice", handle("通知", this.makeNotice))
     let readyCount = 0
-    bot.sdk.sessionManager.receiver?.on("ready", () => {
+    const receiver = bot.sdk.sessionManager?.receiver
+    receiver?.on("ready", () => {
       if (Bot[id] !== bot) return
       bot.online = true
       markAdapterId(id, true)
       readyCount += 1
+      log.info(`[${id}] 网关握手完成（ready）`, {
+        readyCount,
+        elapsedMs: Date.now() - startedAt,
+        wsReadyState: receiver?.handler?.ws?.readyState,
+      })
       if (readyCount > 1) qblog.mark(`[${id}] 自动重连成功`)
     })
-    bot.sdk.sessionManager.receiver?.on("close", () => {
+    receiver?.on("close", (code, reason) => {
       if (Bot[id] !== bot) return
       bot.online = false
       markAdapterId(id, false)
+      const closeReason = Buffer.isBuffer(reason) ? reason.toString() : String(reason ?? "")
+      log.warn(`[${id}] 网关连接关闭`, {
+        code,
+        reason: closeReason,
+        hint: describeCloseCode(code),
+        readyCount,
+        online: bot.online,
+        elapsedMs: Date.now() - startedAt,
+      })
+    })
+    receiver?.on("error", error => {
+      log.error(`[${id}] 网关错误`, describeError(error, {
+        readyCount,
+        elapsedMs: Date.now() - startedAt,
+        wsReadyState: receiver?.handler?.ws?.readyState,
+      }))
+    })
+    // 断线重连由 SDK 内部完成，次数用尽后它只会 emit 这个事件，账号会静默离线。
+    bot.sdk.sessionManager?.on?.("max_retry_reached", () => {
+      if (Bot[id] !== bot) return
+      bot.online = false
+      markAdapterId(id, false)
+      log.error(`[${id}] 自动重连次数已用尽，账号已离线`, {
+        retryDelay: opts.retryDelay,
+        maxRetry: opts.maxRetry,
+        hint: "SDK 的重连次数由 bot.maxRetry 控制；长时间断网后需要重启 Yunzai 或调大该值才能恢复",
+      })
     })
 
+    let phase = account.webhook ? "webhook" : "login"
     try {
       if (account.webhook) {
+        phase = "token"
+        log.info(`[${id}] WebHook 模式：只获取 access_token，不建立 WebSocket`)
         await bot.sdk.sessionManager.getAccessToken()
+        log.info(`[${id}] WebHook access_token 获取成功`, { elapsedMs: Date.now() - startedAt })
         if (Bot[id] !== bot) {
           await sdkLogout(bot.sdk)
-          return { ok: false, intentError: false, error: "QQBot 账号连接已被替换" }
+          log.warn(`[${id}] 账号连接已被新的连接替换，放弃当前 WebHook 连接`)
+          return { ok: false, intentError: false, error: "QQBot 账号连接已被替换", phase }
         }
         bot.login = () => {
           if (Bot[id] !== bot) throw new Error("QQBot 账号连接已被替换")
@@ -240,16 +359,38 @@ export default class AdapterLifecycle {
         }
       }
 
+      phase = "login"
       await bot.login()
-      Object.assign(bot.info, await bot.sdk.getSelfInfo())
+      if (account.webhook) log.info(`[${id}] WebHook 账号已上线`, { elapsedMs: Date.now() - startedAt })
+      phase = "selfinfo"
+      log.debug(`[${id}] 获取机器人资料`, { url: "/users/@me" })
+      const self = await bot.sdk.getSelfInfo()
+      Object.assign(bot.info, self)
+      log.info(`[${id}] 机器人资料获取成功`, {
+        username: self?.username,
+        id: self?.id,
+        appid: self?.appid,
+        elapsedMs: Date.now() - startedAt,
+      })
       if (Bot[id] !== bot) {
         await sdkLogout(bot.sdk)
-        return { ok: false, intentError: false, error: "QQBot 账号连接已被替换" }
+        log.warn(`[${id}] 账号连接已被新的连接替换，放弃当前连接`)
+        return { ok: false, intentError: false, error: "QQBot 账号连接已被替换", phase }
       }
     } catch (err) {
       const msg = err?.message || String(err)
-      const intentError = /^40(13|14)\b/.test(msg)
+      const intentError = /^40(13|14)\b/.test(msg) || /\b40(13|14)\b/.test(msg)
+      const hint = describeErrorHint(err)
+      log.error(`[${id}] 连接失败（阶段：${PHASE_TEXT[phase] || phase}）`, describeError(err, {
+        phase,
+        intents,
+        elapsedMs: Date.now() - startedAt,
+        online: bot.online,
+        readyCount,
+        hint,
+      }))
       qblog.error(`[${id}] ${this.name}(${this.id}) ${this.version} 连接失败：${msg}`)
+      if (hint) log.warn(`[${id}] 排查提示`, { hint })
 
       if (/^491[45]\b/.test(msg))
         qblog.error(`[${id}] 4914/4915：机器人已下架或封禁，请到 QQ 开放平台处理`)
@@ -262,13 +403,26 @@ export default class AdapterLifecycle {
         markAdapterId(id, false)
       }
       if (account.webhook && this.appid[opts.appid] === bot) delete this.appid[opts.appid]
-      return { ok: false, intentError, error: msg }
+      return { ok: false, intentError, error: msg, phase, hint }
     }
 
     if (bot.online) {
       markAdapterId(id, true)
       qblog.mark(`[${id}] ${this.name}(${this.id}) ${this.version} ${bot.nickname} 已连接`)
+      log.info(`[${id}] 账号连接流程完成`, {
+        nickname: bot.nickname,
+        online: true,
+        elapsedMs: Date.now() - startedAt,
+        readyCount,
+      })
       dispatch(`connect.${id}`, { self_id: id })
+    } else {
+      log.warn(`[${id}] 连接流程结束，但账号当前不在线`, {
+        online: false,
+        elapsedMs: Date.now() - startedAt,
+        readyCount,
+        hint: "通常表示 ready 之后立刻被网关关闭，请检查上面的 close / error 日志",
+      })
     }
     return { ok: true }
   }

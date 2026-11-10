@@ -4,6 +4,8 @@ config/config/botlist.json
 pnpm-lock.yaml
 # 本地调查脚本、源码清单和报告
 /.local/
+# 测试/本地运行时生成的数据（诊断日志、文件直链缓存等）
+/data/
 # 编辑器临时文件：可能夹带配置明文（AppSecret），别提交
 *.swp
 *.swo

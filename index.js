@@ -7,6 +7,7 @@ import { SDK_NAME, SDK_VERSION } from "./adapter/sdk.js"
 
 qblog.mark(`官方依赖 ${SDK_NAME} v${SDK_VERSION}`)
 qblog.mark("欢迎使用 QQBot Plugin（Miao-Yunzai 适配版），正在加载")
+qblog.debug("连接诊断日志：data/QQBot/diagnostics.log（扫码或连接失败时请发送该文件）")
 
 // Bot.adapter 按社区约定存放在线账号 ID。
 if (!Array.isArray(Bot.adapter)) Bot.adapter = []
