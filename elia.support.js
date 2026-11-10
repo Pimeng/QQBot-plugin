@@ -8,7 +8,13 @@ import { sharp } from "./lib/utils/files.js"
 import { webhook } from "./lib/utils/webhook.js"
 import { panelExtensions } from "./lib/panel/extensions.js"
 
-const SEND_MODES = new Set(["auto", "markdown", "text"])
+/**
+ * 发送模式 plain-first：普通消息优先，普通消息整条失败后再用 Markdown 兜底。
+ * 普通消息图文顺序 plainImageOrder：auto（图片在上）/ text-first（文字先发）/ image-first（图片在前）；
+ * 只影响未走 Markdown 的普通消息，键支持 default、机器人标识和“机器人标识:群OpenID”。
+ */
+const SEND_MODES = new Set(["auto", "markdown", "text", "plain-first"])
+const PLAIN_IMAGE_ORDERS = new Set(["auto", "text-first", "image-first"])
 const ACTIVE_MESSAGE_MODES = new Set(["auto", "true", "false"])
 
 function configVersion() {
@@ -75,8 +81,29 @@ function parseSendModes(value) {
     const key = account.trim()
     const value = textValue(mode, `发送模式 ${key || "default"}`)
     if (!key || !SEND_MODES.has(value))
-      throw new Error(`发送模式 ${key || "default"} 只能是 auto、markdown 或 text`)
+      throw new Error(`发送模式 ${key || "default"} 只能是 auto、markdown、text 或 plain-first`)
     result[key] = value
+  }
+  if (!Object.hasOwn(result, "default")) result.default = "auto"
+  return result
+}
+
+function parsePlainImageOrder(value) {
+  if (typeof value === "string" && PLAIN_IMAGE_ORDERS.has(value.trim())) value = { default: value.trim() }
+  const entries = typeof value === "string" ? parseYaml(value, "普通消息图文顺序", {}) : value
+  if (!entries || typeof entries !== "object" || Array.isArray(entries))
+    throw new Error("普通消息图文顺序必须是 YAML 键值对象")
+
+  const result = {}
+  for (const [account, order] of Object.entries(entries)) {
+    const key = account.trim()
+    if (!key) throw new Error("普通消息图文顺序的键不能为空")
+    if (key !== "default" && !/^[^:\s]+(:[^:\s]+)?$/.test(key))
+      throw new Error(`普通消息图文顺序键 ${key} 必须是 default、机器人标识或“机器人标识:群OpenID”`)
+    const mode = textValue(order, `普通消息图文顺序 ${key}`)
+    if (!PLAIN_IMAGE_ORDERS.has(mode))
+      throw new Error(`普通消息图文顺序 ${key} 只能是 auto、text-first 或 image-first`)
+    result[key] = mode
   }
   if (!Object.hasOwn(result, "default")) result.default = "auto"
   return result
@@ -220,6 +247,11 @@ function readSettings() {
       ]),
     ),
     sendMode: { ...readObject(config.sendMode, { default: "auto" }) },
+    plainImageOrder:
+      typeof config.plainImageOrder === "string"
+        ? { default: config.plainImageOrder }
+        : { ...readObject(config.plainImageOrder, { default: "auto" }) },
+    plainImageOrderMaxMedia: Number(config.plainImageOrderMaxMedia ?? 4),
     markdown: { template: String(markdown.template ?? "") },
   }
 }
@@ -418,7 +450,9 @@ export function supportPanel() {
         {
           field: "sendMode",
           label: "发送模式映射",
-          bottomHelpMessage: "按 default 或机器人标识配置，值为 auto、markdown 或 text。",
+          bottomHelpMessage:
+            "按 default 或机器人标识配置。auto：普通消息优先，只有按钮/显式 Markdown 才走 Markdown；" +
+            "markdown：强制 Markdown；text：始终普通消息；plain-first：普通消息优先，普通消息发送失败后再用 Markdown 兜底（含按钮/显式 Markdown 段时仍直接用 Markdown）。",
           component: "KeyValue",
           componentProps: {
             keyLabel: "默认项或机器人标识",
@@ -431,9 +465,41 @@ export function supportPanel() {
                 { label: "自动", value: "auto" },
                 { label: "强制 Markdown", value: "markdown" },
                 { label: "普通消息", value: "text" },
+                { label: "普通消息优先", value: "plain-first" },
               ],
             },
           },
+        },
+        {
+          field: "plainImageOrder",
+          label: "普通消息图文顺序",
+          bottomHelpMessage:
+            "仅影响未走 Markdown 的普通消息。键填 default、机器人标识或“机器人标识:群OpenID”，群级优先于账号级。" +
+            "auto：文字并入首张图片说明（图片在上、文字在下）；text-first：文字先单独发一条，再发图片（文字在上，会多一条消息）；" +
+            "image-first：强制图片在前（与 auto 相同，便于显式配置）。",
+          component: "KeyValue",
+          componentProps: {
+            keyLabel: "default / 机器人标识 / 机器人:群",
+            keyPlaceholder: "default 或 4018856587:群OpenID",
+            valueLabel: "图文顺序",
+            defaultValue: "auto",
+            valueComponent: "Select",
+            valueProps: {
+              options: [
+                { label: "自动（图片在上）", value: "auto" },
+                { label: "文字在前", value: "text-first" },
+                { label: "图片在前", value: "image-first" },
+              ],
+            },
+          },
+        },
+        {
+          field: "plainImageOrderMaxMedia",
+          label: "文字在前最多媒体数",
+          bottomHelpMessage:
+            "文字在前会多占一条被动回复；媒体数超过该值时自动退回图片在前。默认 4；群聊按文字 + 4 张媒体 = 5 条，单聊自动收紧为文字 + 3 张 = 4 条（各自上限）。",
+          component: "InputNumber",
+          componentProps: { min: 1, max: 5, precision: 0 },
         },
         {
           field: "markdown.template",
@@ -514,6 +580,14 @@ export function supportPanel() {
           const accountsInput = fieldValue(data, "accounts")
           const accounts = accountsInput === undefined ? undefined : parseAccounts(accountsInput)
           const sendMode = parseSendModes(fieldValue(data, "sendMode") ?? config.sendMode ?? { default: "auto" })
+          const plainImageOrder = parsePlainImageOrder(
+            fieldValue(data, "plainImageOrder") ?? config.plainImageOrder ?? { default: "auto" },
+          )
+          const plainImageOrderMaxMedia = numberValue(
+            fieldValue(data, "plainImageOrderMaxMedia") ?? config.plainImageOrderMaxMedia ?? 4,
+            "文字在前最多媒体数",
+            { integer: true, min: 1, max: 5 },
+          )
           const markdownTemplate = textValue(
             fieldValue(data, "markdown.template") ?? markdownConfig.template ?? "",
             "Markdown 模板 ID",
@@ -555,6 +629,8 @@ export function supportPanel() {
             activeMsg: activeMsg === "auto" ? "auto" : activeMsg === "true",
             activeMsgGroups,
             sendMode,
+            plainImageOrder,
+            plainImageOrderMaxMedia,
             markdown: { ...markdownConfig, template: markdownTemplate },
             intents: parseLineList(fieldValue(data, "intents") ?? config.intents ?? [], "Intents"),
             master: parseLineList(fieldValue(data, "master") ?? config.master ?? [], "额外主人"),

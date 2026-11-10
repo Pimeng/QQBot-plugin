@@ -79,11 +79,13 @@ accounts:
 | `#QQBot账号` | 查看账号状态 |
 | `#QQBot设置` + `机器人QQ号:AppID:AppSecret` | 添加或移除账号 |
 | `#QQBotMD` | 设置 Markdown 消息模式 |
-| `#QQBot发送模式` | 查询或设置 `auto`、`markdown`、`text` |
+| `#QQBot发送模式` | 查询或设置 `auto`、`markdown`、`text`、`plain-first` |
 | `#QQBot图片限制` | 设置图片压缩阈值（MB） |
 | `#QQBotDAU[机器人标识]` | 查看今日、昨日和最近 30 天平均 DAU |
 | `#QQBot用户统计[机器人标识]` | 查看累计已见联系人、今日新增和用户留存 |
 | `#QQBot绑定用户` | 绑定 QQ 用户 |
+
+`plain-first` 表示普通消息优先、发送失败后再用 Markdown 兜底。普通消息的图文顺序可用 `plainImageOrder` 固定为 `auto`（图片在上）、`text-first`（文字在上，会多一条消息）或 `image-first`，详见[技术说明](docs/technical-details.md#普通消息图文顺序)。
 
 DAU 默认开启并按账号保存到 `data/QQBot/<id>/DAU.json`。普通成员入群使用 icqq 的 `notice.group.increase`，插件捕获后自行推送欢迎。`stream` 控制 C2C 文本/Markdown 默认流式输出，`inputNotify` 控制实际插件处理时显示输入中；统计口径、事件示例和 stream 段写法见[技术说明](docs/technical-details.md)。
 

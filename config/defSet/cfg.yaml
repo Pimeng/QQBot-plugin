@@ -29,9 +29,19 @@ markdown:
   template: abcdefghij
 # 发送模式：auto（默认，只有显式 markdown / 按钮才走 markdown，其余硬拆成普通消息）
 #           markdown（强制所有消息走 markdown）/ text（始终普通消息）
-# 也可按机器人 QQ 号覆盖：sendMode: { default: auto, "3889013403": markdown }
+#           plain-first（普通消息优先；普通消息发不出去时再用 markdown 兜底；含按钮/显式 markdown 段时直接走 markdown）
+# 也可按机器人 QQ 号覆盖：sendMode: { default: auto, "3889013403": plain-first }
 sendMode:
   default: auto
+# 普通消息（未走 Markdown）里文字与图片的先后顺序：
+#   auto        有文字时并入首张图片的说明文字（图片在上、文字在下，单条消息）
+#   text-first  文字先单独发一条，再发图片（文字在上、图片在下；每条回复多一条消息）
+#   image-first 强制图片在前（与 auto 相同，便于显式配置）
+# 键可以是 default、机器人标识（QQ 号 / AppID），或“机器人标识:群OpenID”。
+plainImageOrder:
+  default: auto
+# text-first 拆条时允许的最大媒体数；超过“文字 + 媒体”的被动回复上限时退回图片在前（群聊 5 条、单聊 4 条，单聊会自动收紧）
+plainImageOrderMaxMedia: 4
 # C2C 文本/Markdown 是否默认使用流式输出；单条消息也可用 stream 段显式启用
 stream: false
 # 实际有插件方法处理 C2C 消息时显示“输入中”，持续秒数限制为 1-60

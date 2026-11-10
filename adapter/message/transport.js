@@ -1,4 +1,5 @@
 import { randomInt } from "node:crypto"
+import { config } from "../../lib/utils/cfg.js"
 import { isActiveMsgDenied, isPassiveReplyLimit } from "../../lib/utils/message.js"
 import { uploadBotFile } from "../../lib/utils/file-upload.js"
 import { qblog } from "../../lib/utils/logger.js"
@@ -11,6 +12,28 @@ function isMedia(segment) {
 }
 
 export default class MessageTransport extends MarkdownBuilder {
+  /**
+   * 普通消息（非 Markdown）的图文顺序
+   *
+   * config.plainImageOrder 可以是字符串，也可以是
+   * { default, [机器人标识], "机器人标识:群OpenID" }；群级 > 账号级 > default。
+   * 非法值按 auto 处理。仅影响普通富媒体消息，Markdown 消息不受影响。
+   */
+  plainImageOrder(data) {
+    const setting = config.plainImageOrder
+    let mode
+    if (typeof setting === "string") mode = setting
+    else if (setting && typeof setting === "object") {
+      const selfId = String(data?.self_id ?? "")
+      const prefix = `${selfId}${this.sep ?? ":"}`
+      const rawGroup = String(data?.group_id ?? "")
+      const groupId = rawGroup.startsWith(prefix) ? rawGroup.slice(prefix.length) : rawGroup
+      const groupKey = groupId ? `${selfId}:${groupId}` : ""
+      mode = (groupKey && setting[groupKey]) || setting[selfId] || setting.default
+    }
+    return ["auto", "text-first", "image-first"].includes(mode) ? mode : "auto"
+  }
+
   mediaTarget(data) {
     const target = data._mediaTarget
     if (target?.target_type && target.target_id) return target
@@ -91,6 +114,7 @@ export default class MessageTransport extends MarkdownBuilder {
     const target = this.mediaTarget(data)
     if (!target) return await send(batch)
 
+    const order = this.plainImageOrder(data)
     const others = batch.filter(s => !isMedia(s))
     const reply = others.find(s => s?.type === "reply")
 
@@ -100,6 +124,8 @@ export default class MessageTransport extends MarkdownBuilder {
       if (!info?.file_info) {
         if (media.some(item => item?.type === "file"))
           throw new Error("包含文件的消息富媒体上传未返回 file_info")
+        if (order === "text-first")
+          qblog.warn(`[${data.self_id}] 富媒体上传失败，无法拆分文字在前，改为合并发送`)
         return await send(batch)
       }
       infos.push(info)
@@ -109,6 +135,46 @@ export default class MessageTransport extends MarkdownBuilder {
     /** 只有全是文本段才能并进 caption（SDK 拼 content 时也是把文本首尾直接相接，这里保持一致） */
     const textOnly = contentSegs.length > 0 && contentSegs.every(s => typeof s?.text === "string")
     const caption = textOnly ? contentSegs.map(s => s.text).join("") : ""
+
+    /** 群聊同一 msg_id 最多 5 次被动回复，单聊为 4 次；文字占 1 条，其余留给媒体 */
+    const replyLimit = data.message_type === "group" ? 5 : 4
+    const configuredMaxMedia = Number(config.plainImageOrderMaxMedia)
+    const maxMedia = Number.isFinite(configuredMaxMedia) && configuredMaxMedia > 0
+      ? Math.min(configuredMaxMedia, replyLimit - 1)
+      : replyLimit - 1
+    /**
+     * 文字在前：普通消息没有“一条内文字在上”的能力，只能先发文本、再逐条发媒体。
+     * 只在被动回复下拆，避免主动消息消耗双倍配额；媒体过多会超过同一条 msg_id
+     * 的被动回复上限（群聊 5 条、单聊 4 条），超过时退回 caption（图片在前）。
+     */
+    const textFirst =
+      order === "text-first" &&
+      textOnly &&
+      contentSegs.some(s => String(s.text).trim()) &&
+      this.useReply(data) &&
+      infos.length <= maxMedia
+
+    if (textFirst) {
+      const rets = []
+      try {
+        rets.push(
+          await send([
+            ...(reply ? [reply] : []),
+            ...contentSegs.map(({ _atText, ...segment }) => segment),
+          ]),
+        )
+        for (const info of infos)
+          rets.push(await this.sendFileInfoMessage(data, target, info, reply, ""))
+      } catch (err) {
+        if (rets.length) {
+          const error = err instanceof Error ? err : new Error(String(err))
+          error.qqbotSent = rets
+          throw error
+        }
+        throw err
+      }
+      return rets.length === 1 ? rets[0] : rets
+    }
 
     const rets = []
     try {

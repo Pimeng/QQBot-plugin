@@ -272,7 +272,7 @@ activeMsgGroups:
 
 ### 发送模式与 Markdown
 
-`sendMode` 支持 `auto`、`markdown`、`text`，可为默认值和单个机器人分别设置。EliaAdminPanel 的“发送模式映射”使用 `KeyValue` 控件，以 `default` 或机器人标识为键、下拉选择发送模式；可新增、改名和删除映射，保存仍为下面的键值对象：
+`sendMode` 支持 `auto`、`markdown`、`text`、`plain-first`，可为默认值和单个机器人分别设置。EliaAdminPanel 的“发送模式映射”使用 `KeyValue` 控件，以 `default` 或机器人标识为键、下拉选择发送模式；可新增、改名和删除映射，保存仍为下面的键值对象：
 
 ```yaml
 sendMode:
@@ -283,6 +283,25 @@ sendMode:
 - `auto`：只有消息显式包含 Markdown 或按钮时使用 Markdown，其余走普通消息。
 - `markdown`：所有消息均走 Markdown 构建流程。
 - `text`：始终使用普通消息，不保留 Markdown 排版。
+- `plain-first`：普通消息优先；普通消息整条发送失败时，再用 Markdown 兜底。含按钮或显式 Markdown 段的消息无法用普通消息表达，仍直接走 Markdown。与 `auto` 的区别是失败后的重试方向：`auto` 在 Markdown 失败时改发普通消息，`plain-first` 在普通消息失败时改发 Markdown。
+
+### 普通消息图文顺序
+
+不开 Markdown 时，QQ 一条普通消息只能带一个富元素：`msg_type=7` 的 `content` 会显示在图片下方，因此“文字在前”只能拆成两条消息。`plainImageOrder` 控制这个选择，键可以是 `default`、机器人标识（QQ 号或 AppID）或“机器人标识:群OpenID”，群级优先于账号级：
+
+```yaml
+plainImageOrder:
+  default: auto
+  "4018856587": text-first
+  "4018856587:群OpenID": image-first
+plainImageOrderMaxMedia: 4
+```
+
+- `auto`：文字并入首张图片的说明文字，图片在上、文字在下，一条消息。
+- `text-first`：文字先单独发一条，再逐张发媒体，文字在上、图片在下；每条回复会多一条消息。
+- `image-first`：强制图片在前，与 `auto` 相同，便于显式配置。
+
+`text-first` 只在被动回复（有 `msg_id`/`event_id`）下拆条，避免主动消息消耗双倍配额；文字 + 媒体超过同一 `msg_id` 的被动回复上限（群聊 5 条、单聊 4 条）时自动退回 `image-first`。可用 `plainImageOrderMaxMedia` 调整允许拆条的媒体数（默认 4，单聊会自动收紧为 3）。只对纯文本段生效，含按钮、键盘等无法并入普通文本的段时退回 `auto`。频道消息不走该选项。
 
 普通 Markdown 文本会按配置转义语法字符，以避免颜文字被解析为格式；`escapeMarkdown: false` 可关闭转义。QQ 的真 @ 标签需要 Markdown 消息，普通文本无法提供可点击的 @，因此会显示为可读昵称。入站事件保留用户实际触发的 @，并通过 `atBot` 标记机器人被提及。
 
@@ -294,7 +313,7 @@ sendMode:
 
 群聊和 C2C 私聊的普通消息可通过官方富媒体接口上传本地图片、音频、视频和文件，不要求配置公网地址；文件以原生文件卡片发送。适配器会补充 Yunzai 当前没有的 `segment.file(file, name)` 构造器，也可直接传 `{ type: "file", file, name }`；QQ 群和好友私聊事件中的 `e.group.sendFile(file, name)` / `e.friend.sendFile(file, name)` 会引用当前事件被动发送文件，直接通过 `Bot.pickGroup()` / `Bot.pickFriend()` 获取的对象则按主动消息发送。收到的文件附件会归一为标准 `file` 段。频道不支持原生文件消息。Markdown 内嵌图片与 `fileToUrl` 优先通过官方分片合并取得 `raw_url`，无需公网端口。公网源文件也先尝试官方直链，不可用时才返回原 URL。官方不可用且需要内置文件服务时，须配置 `url`、`webhookPort` 和有效 WebHook 账号，重启后确保服务运行并正确反向代理。`imageLength` 是图片压缩阈值；未安装 `sharp` 时压缩会自动关闭。
 
-带图片的普通消息会尽量将文字与首张媒体合并发送；如果内容包含无法合并的段或平台拒绝 caption，则会拆分发送。所有媒体优先官方接口；平台 URL 转存失败时先在本机下载后按分片流程重传，仍失败时才尝试文件服务 URL 转存。需要文件服务但公网地址缺失或端口未监听时输出警告。Markdown 无可用直链时改用普通媒体消息，不会把 base64 或空值拼成链接。
+带图片的普通消息默认会将文字与首张媒体合并发送；`plainImageOrder: text-first` 会让文字先单独成条，再发媒体。如果内容包含无法合并的段或平台拒绝 caption，则会拆分发送。所有媒体优先官方接口；平台 URL 转存失败时先在本机下载后按分片流程重传，仍失败时才尝试文件服务 URL 转存。需要文件服务但公网地址缺失或端口未监听时输出警告。Markdown 无可用直链时改用普通媒体消息，不会把 base64 或空值拼成链接。
 
 账号、`pickGroup()` 与 `pickFriend()` 对象暴露 `uploadImage(file, opts)`、`fileToUrl(file, opts)` 和 `filetoUrl` 别名，支持 Buffer、Uint8Array、ArrayBuffer、本地路径、`file://`、Base64、data URL 和 HTTP(S) URL。群/好友对象自动绑定当前目标；账号级调用可传 `targetType: "group" | "user"` 与 `targetId`，省略时选择已知群或 C2C 好友；没有目标时官方上传不可用，进入直链回退。频道 ID 不会作为群/C2C 上传目标。
 

@@ -103,11 +103,12 @@ export default class MessageSender extends MessageTransport {
     /**
      * text：始终普通消息（连显式 markdown 段也不走 markdown）
      * auto：只有显式 markdown / 按钮 才值得用 markdown，其余一律普通消息（硬拆）
+     * plain-first：与 auto 相同先走普通消息；普通消息发送失败后由 sendWithFallback 再用 Markdown 兜底
      */
-    if (mode === "text" || (mode === "auto" && !needsMarkdown(msg)))
+    if (mode === "text" || ((mode === "auto" || mode === "plain-first") && !needsMarkdown(msg)))
       return await this.makeMsg(data, msg)
 
-    const msgs = await this.buildMarkdownMsgs(data, msg, config.markdown[data.self_id])
+    const msgs = await this.buildMarkdownMsgs(data, msg, config.markdown?.[data.self_id])
     /** 构建器返回 null：消息里有无法内嵌的图片，整条改用普通（富媒体）消息 */
     return msgs === null ? await this.makeMsg(data, toPlainMsg(msg)) : msgs
   }
@@ -186,6 +187,7 @@ export default class MessageSender extends MessageTransport {
   /** 群、单聊和频道共用发送顺序，消息构建仍使用各自的规则。 */
   async sendWithFallback(data, send, msg, guild = false) {
     const result = { message_id: [], data: [], error: [] }
+    const plainFirst = !guild && sendModeOf(data.self_id) === "plain-first"
     const build = plain => {
       if (guild) return this.makeGuildMsg(data, plain ? toPlainMsg(msg) : msg)
       return plain ? this.buildPlainMsgs(data, msg) : this.buildMsgs(data, msg)
@@ -227,6 +229,20 @@ export default class MessageSender extends MessageTransport {
 
     // 文件不能作为普通文本再次投递；频道文件已在构建时转为链接。
     if (!guild && hasSegment(messages, "file")) return result
+    /**
+     * plain-first：普通消息已经失败过，最后改试 Markdown，而不是重复普通消息。
+     * 含按钮 / 显式 markdown 段的消息一开始就走 Markdown，失败后再退回普通消息。
+     */
+    if (plainFirst && !needsMarkdown(msg)) {
+      const markdownMessages = await this.buildMarkdownMsgs(
+        data,
+        this.appendReplyExtra(msg, data.replyExtra),
+        config.markdown?.[data.self_id],
+      )
+      if (Array.isArray(markdownMessages) && markdownMessages.length)
+        await this.sendBatches(data, markdownMessages, send, result)
+      return result
+    }
     messages = await build(true)
     await this.sendBatches(data, messages, send, result)
     return result
